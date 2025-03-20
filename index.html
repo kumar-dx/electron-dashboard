@@ -43,7 +43,6 @@
         #stopBtn {
             background-color: #f44336;
             color: white;
-            display: none; /* Hide stop button by default */
         }
         .stream-container {
             background-color: black;
@@ -110,7 +109,6 @@
         let ws;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
-        let isIntentionallyStopped = false;
 
         // Get and display the images directory path
         (async () => {
@@ -128,42 +126,25 @@
                 return;
             }
 
-            isIntentionallyStopped = false;
             status.textContent = 'Status: Starting...';
             status.className = 'status';
             reconnectAttempts = 0;
             ipcRenderer.send('start-stream', rtspUrl.value);
             connectWebSocket();
-            
-            // Show stop button and hide start button
-            startBtn.style.display = 'none';
-            stopBtn.style.display = 'inline-block';
         });
 
         stopBtn.addEventListener('click', () => {
-            isIntentionallyStopped = true;
             ipcRenderer.send('stop-stream');
             closeWebSocket();
             status.textContent = 'Status: Stopped';
             status.className = 'status';
             // Clear canvas
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Show start button and hide stop button
-            startBtn.style.display = 'inline-block';
-            stopBtn.style.display = 'none';
         });
 
         function closeWebSocket() {
             if (ws) {
-                try {
-                    ws.onclose = null; // Remove the onclose handler to prevent reconnection attempts
-                    ws.onerror = null; // Remove the error handler
-                    ws.close();
-                    console.log('WebSocket closed cleanly');
-                } catch (error) {
-                    console.error('Error closing WebSocket:', error);
-                }
+                ws.close();
                 ws = null;
             }
         }
@@ -172,7 +153,7 @@
             closeWebSocket();
 
             console.log('Connecting to WebSocket...');
-            ws = new WebSocket('ws://127.0.0.1:9999');
+            ws = new WebSocket('ws://localhost:9999');
             
             // Set binary type to arraybuffer
             ws.binaryType = 'arraybuffer';
@@ -233,16 +214,16 @@
 
             ws.onclose = () => {
                 console.log('WebSocket closed');
+                status.textContent = 'Status: Disconnected';
                 
-                // Only attempt to reconnect if not intentionally stopped
-                if (!isIntentionallyStopped && reconnectAttempts < maxReconnectAttempts) {
+                // Attempt to reconnect
+                if (reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;
-                    console.log(`Reconnecting... Attempt ${reconnectAttempts} of ${maxReconnectAttempts}`);
-                    status.textContent = `Status: Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})`;
+                    console.log(`Reconnecting... Attempt ${reconnectAttempts}`);
                     setTimeout(connectWebSocket, 2000);
                 } else {
-                    status.textContent = isIntentionallyStopped ? 'Status: Stopped' : 'Status: Connection Failed';
-                    status.className = isIntentionallyStopped ? 'status' : 'status error';
+                    status.textContent = 'Status: Failed to connect';
+                    status.className = 'status error';
                 }
             };
         }
@@ -263,10 +244,6 @@
             console.error('Stream error from main process:', error);
             status.textContent = `Status: Error - ${error}`;
             status.className = 'status error';
-            
-            // Show start button and hide stop button on error
-            startBtn.style.display = 'inline-block';
-            stopBtn.style.display = 'none';
         });
 
         // Handle page unload
