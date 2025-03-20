@@ -5,6 +5,7 @@ const axios = require('axios');
 const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const FormData = require('form-data');
 
 let mainWindow;
 let stream;
@@ -61,7 +62,6 @@ function captureFrame(rtspUrl) {
       '-q:v', '1',
       '-vf', 'scale=1280:720',
       '-f', 'image2',
-      '-pix_fmt', 'yuvj420p',
       outputPath
     ]);
 
@@ -102,9 +102,8 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
         '-rtsp_transport': 'tcp',
         '-use_wallclock_as_timestamps': '1',
         '-fflags': '+genpts+igndts',
-        '-c:v': 'mjpeg',
-        '-pix_fmt': 'yuvj420p',
         '-f': 'mpjpeg',
+        '-c:v': 'mjpeg',
         '-q:v': '2',
         '-r': '25',
         '-s': '1280x720',
@@ -172,31 +171,96 @@ ipcMain.on('stop-stream', async () => {
 });
 
 async function uploadFrames() {
+  if (capturedFrames.length === 0) {
+    console.log('No frames to upload');
+    return;
+  }
+
   try {
-    const apiEndpoint = 'http://localhost:8000/api/v1/analytics/process-local-images/';
-    const headers = {
-      'X-API-KEY': 'vrqouhciwtykfummlaqryyxexnkhtvvi',
-      'Content-Type': 'application/json'
-    };
+    const apiEndpoint = 'http://127.0.0.1:8000/api/v1/analytics/process-local-images/';
     
+    // Create FormData instance
+    const formData = new FormData();
+    formData.append('store_id', '111');
+
+    // Keep track of successfully uploaded frames
+    const uploadedFrames = [];
+
+    // Add all captured images to the form data
     for (const frame of capturedFrames) {
       try {
-        await axios.post(apiEndpoint, {
-          timestamp: frame.timestamp,
-          image: frame.data.toString('base64'),
-          store_id: 111
-        }, { headers });
-
-        console.log(`Successfully uploaded frame from: ${frame.path}`);
+        // Check if file exists
+        await fs.access(frame.path);
+        const fileStream = fsSync.createReadStream(frame.path);
+        
+        // Get the file name from the path
+        const fileName = path.basename(frame.path);
+        
+        // Add each file with a unique field name
+        formData.append('images', fileStream, {
+          filename: fileName,
+          contentType: 'image/jpeg',
+          knownLength: fsSync.statSync(frame.path).size
+        });
+        
+        uploadedFrames.push(frame);
+        console.log(`Added frame to form data: ${frame.path}`);
       } catch (error) {
-        console.error(`Error uploading frame from ${frame.path}:`, error.message);
+        console.error(`Error reading file ${frame.path}:`, error);
+        // Skip this frame but continue with others
+        continue;
       }
     }
-    
-    // Clear the frames array after upload attempts
-    capturedFrames = [];
+
+    if (uploadedFrames.length === 0) {
+      console.log('No valid frames to upload');
+      return;
+    }
+
+    console.log('Uploading frames to server...');
+
+    // Make the request with form data
+    const response = await axios.post(apiEndpoint, formData, {
+      headers: {
+        'X-API-KEY': 'vrqouhciwtykfummlaqryyxexnkhtvvi',
+        ...formData.getHeaders()
+      },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      timeout: 60000, // Increase timeout to 60 seconds
+      validateStatus: function (status) {
+        return status >= 200 && status < 300; // Only accept success status codes
+      }
+    });
+
+    console.log('Upload successful, server response:', response.status);
+
+    // Only remove successfully uploaded frames from the array
+    capturedFrames = capturedFrames.filter(frame => !uploadedFrames.includes(frame));
+
+    // Optionally, delete the files after successful upload
+    for (const frame of uploadedFrames) {
+      try {
+        await fs.unlink(frame.path);
+        console.log(`Deleted uploaded frame: ${frame.path}`);
+      } catch (error) {
+        console.error(`Error deleting file ${frame.path}:`, error);
+      }
+    }
   } catch (error) {
     console.error('Error in uploadFrames:', error);
+    if (error.response) {
+      console.error('Server response:', {
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      });
+    } else if (error.request) {
+      console.error('No response received:', error.message);
+      console.error('Is the API server running at http://127.0.0.1:8000 ?');
+    } else {
+      console.error('Error setting up request:', error.message);
+    }
   }
 }
 
