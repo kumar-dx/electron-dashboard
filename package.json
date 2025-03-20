@@ -1,0 +1,19 @@
+{
+  "name": "electron-dashboard",
+  "version": "1.0.0",
+  "description": "RTSP Camera Stream Dashboard",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "node-rtsp-stream": "^0.0.9",
+    "axios": "^1.6.2"
+  }
+}

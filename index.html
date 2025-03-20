@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>RTSP Stream Viewer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .controls {
+            margin-bottom: 20px;
+            padding: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-right: 10px;
+        }
+        #startBtn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        #stopBtn {
+            background-color: #f44336;
+            color: white;
+        }
+        .stream-container {
+            background-color: black;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 20px;
+            min-height: 480px;
+            position: relative;
+        }
+        #streamCanvas {
+            width: 100%;
+            max-width: 1280px;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #e8e8e8;
+        }
+        .error {
+            color: #f44336;
+            font-weight: bold;
+        }
+        .info {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #e8f5e9;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .info code {
+            background-color: #f5f5f5;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <input type="text" id="rtspUrl" placeholder="Enter RTSP URL (e.g., rtsp://username:password@ip:port/stream)">
+            <button id="startBtn">Start Stream</button>
+            <button id="stopBtn">Stop Stream</button>
+        </div>
+        <div class="stream-container">
+            <canvas id="streamCanvas" width="1280" height="720"></canvas>
+        </div>
+        <div class="status" id="status">Status: Stopped</div>
+        <div class="info" id="imagesDirInfo">Images are saved in: <code>Loading...</code></div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const rtspUrl = document.getElementById('rtspUrl');
+        const status = document.getElementById('status');
+        const canvas = document.getElementById('streamCanvas');
+        const imagesDirInfo = document.getElementById('imagesDirInfo');
+        const ctx = canvas.getContext('2d');
+        let ws;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // Get and display the images directory path
+        (async () => {
+            try {
+                const imagesDir = await ipcRenderer.invoke('get-images-dir');
+                imagesDirInfo.innerHTML = `Images are saved in: <code>${imagesDir}</code>`;
+            } catch (error) {
+                console.error('Error getting images directory:', error);
+            }
+        })();
+
+        startBtn.addEventListener('click', () => {
+            if (!rtspUrl.value) {
+                alert('Please enter an RTSP URL');
+                return;
+            }
+
+            status.textContent = 'Status: Starting...';
+            status.className = 'status';
+            reconnectAttempts = 0;
+            ipcRenderer.send('start-stream', rtspUrl.value);
+            connectWebSocket();
+        });
+
+        stopBtn.addEventListener('click', () => {
+            ipcRenderer.send('stop-stream');
+            closeWebSocket();
+            status.textContent = 'Status: Stopped';
+            status.className = 'status';
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        });
+
+        function closeWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function connectWebSocket() {
+            closeWebSocket();
+
+            console.log('Connecting to WebSocket...');
+            ws = new WebSocket('ws://localhost:9999');
+            
+            // Set binary type to arraybuffer
+            ws.binaryType = 'arraybuffer';
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                status.textContent = 'Status: Connected';
+                status.className = 'status';
+                reconnectAttempts = 0;
+            };
+
+            ws.onmessage = async (msg) => {
+                try {
+                    // Convert ArrayBuffer to Uint8Array
+                    const uint8Array = new Uint8Array(msg.data);
+                    
+                    // Create blob URL
+                    const blob = new Blob([uint8Array], { type: 'image/jpeg' });
+                    const imageUrl = URL.createObjectURL(blob);
+                    
+                    // Create new image and set source
+                    const image = new Image();
+                    
+                    // Set up onload before setting src
+                    image.onload = () => {
+                        try {
+                            // Clear previous frame
+                            ctx.clearRect(0, 0, canvas.width, canvas.height);
+                            
+                            // Draw new frame
+                            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                            
+                            // Clean up
+                            URL.revokeObjectURL(imageUrl);
+                        } catch (drawError) {
+                            console.error('Error drawing image:', drawError);
+                        }
+                    };
+                    
+                    // Set up onerror before setting src
+                    image.onerror = (err) => {
+                        console.error('Error loading image:', err);
+                        URL.revokeObjectURL(imageUrl);
+                    };
+                    
+                    // Set the image source
+                    image.src = imageUrl;
+                } catch (error) {
+                    console.error('Error processing stream data:', error);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket Error:', error);
+                status.textContent = 'Status: Connection Error';
+                status.className = 'status error';
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                status.textContent = 'Status: Disconnected';
+                
+                // Attempt to reconnect
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    console.log(`Reconnecting... Attempt ${reconnectAttempts}`);
+                    setTimeout(connectWebSocket, 2000);
+                } else {
+                    status.textContent = 'Status: Failed to connect';
+                    status.className = 'status error';
+                }
+            };
+        }
+
+        ipcRenderer.on('stream-started', () => {
+            console.log('Stream started from main process');
+        });
+
+        ipcRenderer.on('stream-stopped', () => {
+            closeWebSocket();
+            status.textContent = 'Status: Stopped';
+            status.className = 'status';
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        });
+
+        ipcRenderer.on('stream-error', (event, error) => {
+            console.error('Stream error from main process:', error);
+            status.textContent = `Status: Error - ${error}`;
+            status.className = 'status error';
+        });
+
+        // Handle page unload
+        window.addEventListener('beforeunload', () => {
+            closeWebSocket();
+        });
+    </script>
+</body>
+</html> 
