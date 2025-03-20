@@ -5,6 +5,8 @@ const axios = require('axios');
 const { spawn } = require('child_process');
 const fs = require('fs').promises;
 const fsSync = require('fs');
+const FormData = require('form-data');
+require('dotenv').config();
 
 let mainWindow;
 let stream;
@@ -13,10 +15,19 @@ let captureInterval;
 let uploadInterval;
 let ffmpegProcess;
 
+// Configuration
+const config = {
+    apiEndpoint: process.env.API_ENDPOINT || 'http://localhost:8000/api/v1/analytics/process-local-images/',
+    apiKey: process.env.API_KEY || 'vrqouhciwtykfummlaqryyxexnkhtvvi',
+    storeId: parseInt(process.env.STORE_ID || '111', 10),
+    frameCapturePath: path.join(app.getPath('userData'), 'captured_frames'),
+    frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10),
+    frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10)
+};
+
 // Create images directory if it doesn't exist
-const imagesDir = path.join(app.getPath('userData'), 'captured_frames');
-if (!fsSync.existsSync(imagesDir)) {
-  fsSync.mkdirSync(imagesDir, { recursive: true });
+if (!fsSync.existsSync(config.frameCapturePath)) {
+    fsSync.mkdirSync(config.frameCapturePath, { recursive: true });
 }
 
 function createWindow() {
@@ -51,7 +62,7 @@ app.on('activate', () => {
 function captureFrame(rtspUrl) {
   return new Promise((resolve, reject) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const outputPath = path.join(imagesDir, `frame_${timestamp}.jpg`);
+    const outputPath = path.join(config.frameCapturePath, `frame_${timestamp}.jpg`);
     
     const ffmpeg = spawn('ffmpeg', [
       '-y',
@@ -59,9 +70,9 @@ function captureFrame(rtspUrl) {
       '-i', rtspUrl,
       '-vframes', '1',
       '-q:v', '1',
-      '-vf', 'scale=1280:720',
+      '-vf', 'scale=1280:720,format=yuv420p',
+      '-update', '1',
       '-f', 'image2',
-      '-pix_fmt', 'yuvj420p',
       outputPath
     ]);
 
@@ -98,6 +109,7 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
       name: 'camera',
       streamUrl: rtspUrl,
       wsPort: 9999,
+      host: '127.0.0.1', // Explicitly use IPv4 localhost
       ffmpegOptions: {
         '-rtsp_transport': 'tcp',
         '-use_wallclock_as_timestamps': '1',
@@ -108,7 +120,8 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
         '-q:v': '2',
         '-r': '25',
         '-s': '1280x720',
-        '-an': ''
+        '-an': '',
+        '-vf': 'format=yuv420p'
       }
     });
 
@@ -128,7 +141,7 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
       mainWindow.webContents.send('stream-error', error.message);
     });
 
-    // Start frame capture interval (every 30 seconds)
+    // Start frame capture interval
     captureInterval = setInterval(async () => {
       if (stream) {
         try {
@@ -141,19 +154,20 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
           console.log('Frame captured successfully and saved to:', frame.path);
         } catch (error) {
           console.error('Error capturing frame:', error);
+          event.sender.send('stream-error', `Frame capture error: ${error.message}`);
         }
       }
-    }, 30000);
+    }, config.frameCaptureInterval);
 
-    // Start upload interval (every 5 minutes)
+    // Start upload interval
     uploadInterval = setInterval(async () => {
       if (capturedFrames.length > 0) {
         await uploadFrames();
       }
-    }, 300000);
+    }, config.frameUploadInterval);
   } catch (error) {
     console.error('Error starting stream:', error);
-    mainWindow.webContents.send('stream-error', error.message);
+    event.sender.send('stream-error', error.message);
   }
 });
 
@@ -172,31 +186,93 @@ ipcMain.on('stop-stream', async () => {
 });
 
 async function uploadFrames() {
+  if (capturedFrames.length === 0) {
+    return;
+  }
+
   try {
-    const apiEndpoint = 'http://localhost:8000/api/v1/analytics/process-local-images/';
     const headers = {
-      'X-API-KEY': 'vrqouhciwtykfummlaqryyxexnkhtvvi',
-      'Content-Type': 'application/json'
+      'X-API-KEY': config.apiKey
     };
-    
-    for (const frame of capturedFrames) {
+
+    // Create a copy of frames to upload and clear the original array
+    const framesToUpload = [...capturedFrames];
+    capturedFrames = [];
+
+    for (const frame of framesToUpload) {
       try {
-        await axios.post(apiEndpoint, {
-          timestamp: frame.timestamp,
-          image: frame.data.toString('base64'),
-          store_id: 111
-        }, { headers });
+        const formData = new FormData();
+        formData.append('timestamp', frame.timestamp);
+        
+        // Create a Buffer from the image data and append it with the correct field name
+        const imageBuffer = Buffer.from(frame.data);
+        formData.append('images', imageBuffer, {
+          filename: path.basename(frame.path),
+          contentType: 'image/jpeg'
+        });
+        
+        formData.append('store_id', config.storeId.toString());
+
+        const response = await axios.post(config.apiEndpoint, formData, { 
+          headers: {
+            ...headers,
+            ...formData.getHeaders()
+          },
+          timeout: 30000, // 30 second timeout
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity
+        });
 
         console.log(`Successfully uploaded frame from: ${frame.path}`);
+        
+        // Delete the file after successful upload
+        try {
+          await fs.unlink(frame.path);
+        } catch (deleteError) {
+          console.warn(`Warning: Could not delete frame file ${frame.path}:`, deleteError.message);
+        }
       } catch (error) {
-        console.error(`Error uploading frame from ${frame.path}:`, error.message);
+        let shouldRetry = false;
+        let errorMessage = '';
+
+        if (error.response) {
+          // Server responded with error status
+          errorMessage = `Server Error (${error.response.status}): ${JSON.stringify(error.response.data)}`;
+          // Retry on 5xx server errors
+          shouldRetry = error.response.status >= 500;
+        } else if (error.request) {
+          // Request made but no response received
+          errorMessage = `No response received: ${error.code || 'Unknown error'}`;
+          shouldRetry = ['ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT'].includes(error.code);
+        } else {
+          // Error in setting up the request
+          errorMessage = `Request setup error: ${error.message}`;
+          shouldRetry = false;
+        }
+
+        console.error(`Error uploading frame from ${frame.path}: ${errorMessage}`);
+        
+        if (shouldRetry) {
+          console.log(`Adding frame back to queue for retry: ${frame.path}`);
+          capturedFrames.push(frame);
+        } else {
+          console.log(`Skipping retry for frame: ${frame.path}`);
+          try {
+            const errorLogPath = path.join(config.frameCapturePath, 'failed_uploads.log');
+            await fs.appendFile(
+              errorLogPath,
+              `${new Date().toISOString()} - ${frame.path} - ${errorMessage}\n`
+            );
+          } catch (logError) {
+            console.error('Failed to write to error log:', logError);
+          }
+        }
       }
     }
-    
-    // Clear the frames array after upload attempts
-    capturedFrames = [];
   } catch (error) {
     console.error('Error in uploadFrames:', error);
+    // Add frames back to queue if there's a catastrophic error
+    capturedFrames = [...capturedFrames, ...framesToUpload];
   }
 }
 
@@ -211,5 +287,5 @@ app.on('before-quit', () => {
 
 // Add a function to get the images directory path
 ipcMain.handle('get-images-dir', () => {
-  return imagesDir;
+  return config.frameCapturePath;
 }); 
