@@ -108,6 +108,7 @@
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let isStreaming = false;
+        let intentionalStop = false;
 
         // Get and display the images directory path
         (async () => {
@@ -149,12 +150,14 @@
 
         function closeWebSocket() {
             if (ws) {
+                intentionalStop = true;
                 ws.close();
                 ws = null;
             }
         }
 
         function connectWebSocket() {
+            intentionalStop = false;
             closeWebSocket();
 
             console.log('Connecting to WebSocket...');
@@ -221,14 +224,16 @@
                 console.log('WebSocket closed');
                 status.textContent = 'Status: Disconnected';
                 
-                // Attempt to reconnect
-                if (reconnectAttempts < maxReconnectAttempts) {
+                // Attempt to reconnect only if not intentionally stopped
+                if (!intentionalStop && reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;
                     console.log(`Reconnecting... Attempt ${reconnectAttempts}`);
                     setTimeout(connectWebSocket, 2000);
                 } else {
-                    status.textContent = 'Status: Failed to connect';
-                    status.className = 'status error';
+                    if (!intentionalStop) {
+                        status.textContent = 'Status: Failed to connect';
+                        status.className = 'status error';
+                    }
                 }
             };
         }
