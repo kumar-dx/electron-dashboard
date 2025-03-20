@@ -109,6 +109,63 @@
         const maxReconnectAttempts = 5;
         let isStreaming = false;
         let intentionalStop = false;
+        
+        // Add buffer for accumulating chunks
+        let frameBuffer = [];
+        let frameSize = 0;
+
+        // Function to check if we have a complete JPEG
+        function isCompleteJPEG(data) {
+            // Check for JPEG end marker (FFD9)
+            if (data.length < 2) return false;
+            return data[data.length - 2] === 0xFF && data[data.length - 1] === 0xD9;
+        }
+
+        // Function to process a complete frame
+        function processFrame(frameData) {
+            try {
+                // Convert to base64
+                const base64String = btoa(String.fromCharCode.apply(null, frameData));
+                const dataUrl = `data:image/jpeg;base64,${base64String}`;
+                
+                // Create new image and set source
+                const image = new Image();
+                
+                // Set up onload before setting src
+                image.onload = () => {
+                    try {
+                        console.log('Image loaded successfully:', image.width, 'x', image.height);
+                        // Clear previous frame
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        
+                        // Draw new frame
+                        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                    } catch (drawError) {
+                        console.error('Error drawing image:', drawError);
+                        status.textContent = 'Status: Error drawing image';
+                        status.className = 'status error';
+                    }
+                };
+                
+                // Set up onerror before setting src
+                image.onerror = (err) => {
+                    console.error('Error loading image:', {
+                        error: err,
+                        dataLength: base64String.length,
+                        sampleData: base64String.substring(0, 100) + '...'
+                    });
+                    status.textContent = 'Status: Error loading image frame';
+                    status.className = 'status error';
+                };
+                
+                // Set the image source
+                image.src = dataUrl;
+            } catch (error) {
+                console.error('Error processing complete frame:', error);
+                status.textContent = 'Status: Error processing frame';
+                status.className = 'status error';
+            }
+        }
 
         // Get and display the images directory path
         (async () => {
@@ -175,42 +232,39 @@
 
             ws.onmessage = async (msg) => {
                 try {
+                    // Log the received data size
+                    console.log('Received WebSocket message size:', msg.data.byteLength);
+                    
                     // Convert ArrayBuffer to Uint8Array
-                    const uint8Array = new Uint8Array(msg.data);
+                    const chunk = new Uint8Array(msg.data);
+                    console.log('Chunk size:', chunk.length);
                     
-                    // Create blob URL
-                    const blob = new Blob([uint8Array], { type: 'image/jpeg' });
-                    const imageUrl = URL.createObjectURL(blob);
+                    // Add chunk to frame buffer
+                    frameBuffer.push(chunk);
+                    frameSize += chunk.length;
                     
-                    // Create new image and set source
-                    const image = new Image();
+                    // Check if we have a complete frame
+                    const combinedFrame = new Uint8Array(frameSize);
+                    let offset = 0;
+                    for (const chunk of frameBuffer) {
+                        combinedFrame.set(chunk, offset);
+                        offset += chunk.length;
+                    }
                     
-                    // Set up onload before setting src
-                    image.onload = () => {
-                        try {
-                            // Clear previous frame
-                            ctx.clearRect(0, 0, canvas.width, canvas.height);
-                            
-                            // Draw new frame
-                            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-                            
-                            // Clean up
-                            URL.revokeObjectURL(imageUrl);
-                        } catch (drawError) {
-                            console.error('Error drawing image:', drawError);
-                        }
-                    };
-                    
-                    // Set up onerror before setting src
-                    image.onerror = (err) => {
-                        console.error('Error loading image:', err);
-                        URL.revokeObjectURL(imageUrl);
-                    };
-                    
-                    // Set the image source
-                    image.src = imageUrl;
+                    if (isCompleteJPEG(combinedFrame)) {
+                        console.log('Complete frame received, size:', frameSize);
+                        processFrame(combinedFrame);
+                        // Reset buffer
+                        frameBuffer = [];
+                        frameSize = 0;
+                    }
                 } catch (error) {
                     console.error('Error processing stream data:', error);
+                    status.textContent = 'Status: Error processing stream data';
+                    status.className = 'status error';
+                    // Reset buffer on error
+                    frameBuffer = [];
+                    frameSize = 0;
                 }
             };
 
