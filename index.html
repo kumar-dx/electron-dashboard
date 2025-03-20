@@ -36,13 +36,13 @@
             font-size: 14px;
             margin-right: 10px;
         }
-        #startBtn {
+        #toggleBtn {
             background-color: #4CAF50;
             color: white;
+            width: 120px;
         }
-        #stopBtn {
+        #toggleBtn.stop {
             background-color: #f44336;
-            color: white;
         }
         .stream-container {
             background-color: black;
@@ -87,8 +87,7 @@
     <div class="container">
         <div class="controls">
             <input type="text" id="rtspUrl" placeholder="Enter RTSP URL (e.g., rtsp://username:password@ip:port/stream)">
-            <button id="startBtn">Start Stream</button>
-            <button id="stopBtn">Stop Stream</button>
+            <button id="toggleBtn">Start Stream</button>
         </div>
         <div class="stream-container">
             <canvas id="streamCanvas" width="1280" height="720"></canvas>
@@ -99,8 +98,7 @@
 
     <script>
         const { ipcRenderer } = require('electron');
-        const startBtn = document.getElementById('startBtn');
-        const stopBtn = document.getElementById('stopBtn');
+        const toggleBtn = document.getElementById('toggleBtn');
         const rtspUrl = document.getElementById('rtspUrl');
         const status = document.getElementById('status');
         const canvas = document.getElementById('streamCanvas');
@@ -109,6 +107,7 @@
         let ws;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
+        let isStreaming = false;
 
         // Get and display the images directory path
         (async () => {
@@ -120,26 +119,32 @@
             }
         })();
 
-        startBtn.addEventListener('click', () => {
-            if (!rtspUrl.value) {
-                alert('Please enter an RTSP URL');
-                return;
+        toggleBtn.addEventListener('click', () => {
+            if (!isStreaming) {
+                if (!rtspUrl.value) {
+                    alert('Please enter an RTSP URL');
+                    return;
+                }
+                // Start streaming
+                status.textContent = 'Status: Starting...';
+                status.className = 'status';
+                reconnectAttempts = 0;
+                ipcRenderer.send('start-stream', rtspUrl.value);
+                connectWebSocket();
+                toggleBtn.textContent = 'Stop Stream';
+                toggleBtn.classList.add('stop');
+                isStreaming = true;
+            } else {
+                // Stop streaming
+                ipcRenderer.send('stop-stream');
+                closeWebSocket();
+                status.textContent = 'Status: Stopped';
+                status.className = 'status';
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                toggleBtn.textContent = 'Start Stream';
+                toggleBtn.classList.remove('stop');
+                isStreaming = false;
             }
-
-            status.textContent = 'Status: Starting...';
-            status.className = 'status';
-            reconnectAttempts = 0;
-            ipcRenderer.send('start-stream', rtspUrl.value);
-            connectWebSocket();
-        });
-
-        stopBtn.addEventListener('click', () => {
-            ipcRenderer.send('stop-stream');
-            closeWebSocket();
-            status.textContent = 'Status: Stopped';
-            status.className = 'status';
-            // Clear canvas
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
         });
 
         function closeWebSocket() {
@@ -230,20 +235,28 @@
 
         ipcRenderer.on('stream-started', () => {
             console.log('Stream started from main process');
+            isStreaming = true;
+            toggleBtn.textContent = 'Stop Stream';
+            toggleBtn.classList.add('stop');
         });
 
         ipcRenderer.on('stream-stopped', () => {
             closeWebSocket();
             status.textContent = 'Status: Stopped';
             status.className = 'status';
-            // Clear canvas
             ctx.clearRect(0, 0, canvas.width, canvas.height);
+            isStreaming = false;
+            toggleBtn.textContent = 'Start Stream';
+            toggleBtn.classList.remove('stop');
         });
 
         ipcRenderer.on('stream-error', (event, error) => {
             console.error('Stream error from main process:', error);
             status.textContent = `Status: Error - ${error}`;
             status.className = 'status error';
+            isStreaming = false;
+            toggleBtn.textContent = 'Start Stream';
+            toggleBtn.classList.remove('stop');
         });
 
         // Handle page unload
