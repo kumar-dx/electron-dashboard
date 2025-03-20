@@ -10,7 +10,7 @@
             background-color: #f0f0f0;
         }
         .container {
-            max-width: 1000px;
+            max-width: 1280px;
             margin: 0 auto;
         }
         .controls {
@@ -19,6 +19,23 @@
             background-color: white;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stream-container {
+            background-color: black;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 20px;
+            min-height: 480px;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #streamCanvas {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            background-color: black;
         }
         input[type="text"] {
             width: 100%;
@@ -35,52 +52,42 @@
             cursor: pointer;
             font-size: 14px;
             margin-right: 10px;
+            transition: background-color 0.2s;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
         #startBtn {
             background-color: #4CAF50;
             color: white;
         }
+        #startBtn:hover {
+            background-color: #45a049;
+        }
         #stopBtn {
             background-color: #f44336;
             color: white;
-            display: none; /* Hide stop button by default */
+            display: none;
         }
-        .stream-container {
-            background-color: black;
-            padding: 10px;
-            border-radius: 8px;
-            margin-top: 20px;
-            min-height: 480px;
-            position: relative;
-        }
-        #streamCanvas {
-            width: 100%;
-            max-width: 1280px;
-            height: auto;
-            display: block;
-            margin: 0 auto;
+        #stopBtn:hover {
+            background-color: #da190b;
         }
         .status {
             margin-top: 10px;
             padding: 10px;
             border-radius: 4px;
-            background-color: #e8e8e8;
-        }
-        .error {
-            color: #f44336;
-            font-weight: bold;
-        }
-        .info {
-            margin-top: 10px;
-            padding: 10px;
             background-color: #e8f5e9;
-            border-radius: 4px;
-            font-size: 14px;
+            color: #2e7d32;
         }
-        .info code {
-            background-color: #f5f5f5;
-            padding: 2px 4px;
-            border-radius: 3px;
+        .status.error {
+            background-color: #ffebee;
+            color: #c62828;
+        }
+        #imagesDirInfo {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
         }
     </style>
 </head>
@@ -90,12 +97,12 @@
             <input type="text" id="rtspUrl" placeholder="Enter RTSP URL (e.g., rtsp://username:password@ip:port/stream)">
             <button id="startBtn">Start Stream</button>
             <button id="stopBtn">Stop Stream</button>
+            <div id="status" class="status">Status: Ready</div>
+            <div id="imagesDirInfo"></div>
         </div>
         <div class="stream-container">
             <canvas id="streamCanvas" width="1280" height="720"></canvas>
         </div>
-        <div class="status" id="status">Status: Stopped</div>
-        <div class="info" id="imagesDirInfo">Images are saved in: <code>Loading...</code></div>
     </div>
 
     <script>
@@ -106,53 +113,125 @@
         const status = document.getElementById('status');
         const canvas = document.getElementById('streamCanvas');
         const imagesDirInfo = document.getElementById('imagesDirInfo');
-        const ctx = canvas.getContext('2d');
-        let ws;
+        const ctx = canvas.getContext('2d', { alpha: false }); // Disable alpha for better performance
+        let ws = null;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let isIntentionallyStopped = false;
 
+        // Set initial canvas background to black
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
         // Get and display the images directory path
-        (async () => {
-            try {
-                const imagesDir = await ipcRenderer.invoke('get-images-dir');
-                imagesDirInfo.innerHTML = `Images are saved in: <code>${imagesDir}</code>`;
-            } catch (error) {
-                console.error('Error getting images directory:', error);
-            }
-        })();
-
-        startBtn.addEventListener('click', () => {
-            if (!rtspUrl.value) {
-                alert('Please enter an RTSP URL');
-                return;
-            }
-
-            isIntentionallyStopped = false;
-            status.textContent = 'Status: Starting...';
-            status.className = 'status';
-            reconnectAttempts = 0;
-            ipcRenderer.send('start-stream', rtspUrl.value);
-            connectWebSocket();
-            
-            // Show stop button and hide start button
-            startBtn.style.display = 'none';
-            stopBtn.style.display = 'inline-block';
+        ipcRenderer.invoke('get-images-dir').then((dir) => {
+            imagesDirInfo.textContent = `Images directory: ${dir}`;
         });
 
-        stopBtn.addEventListener('click', () => {
-            isIntentionallyStopped = true;
-            ipcRenderer.send('stop-stream');
-            closeWebSocket();
-            status.textContent = 'Status: Stopped';
-            status.className = 'status';
-            // Clear canvas
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Show start button and hide stop button
-            startBtn.style.display = 'inline-block';
-            stopBtn.style.display = 'none';
-        });
+        function connectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            console.log('Connecting to WebSocket...');
+            ws = new WebSocket('ws://127.0.0.1:9999');
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                status.textContent = 'Status: Connected';
+                status.className = 'status';
+                reconnectAttempts = 0;
+            };
+
+            ws.onmessage = async (msg) => {
+                try {
+                    if (!msg.data || msg.data.byteLength === 0) {
+                        console.error('Received empty data');
+                        return;
+                    }
+
+                    const uint8Array = new Uint8Array(msg.data);
+                    
+                    // Verify JPEG header
+                    if (uint8Array[0] !== 0xFF || uint8Array[1] !== 0xD8) {
+                        console.error('Invalid JPEG data received');
+                        return;
+                    }
+
+                    const blob = new Blob([uint8Array], { type: 'image/jpeg' });
+                    const imageUrl = URL.createObjectURL(blob);
+                    const image = new Image();
+
+                    image.onload = () => {
+                        try {
+                            // Calculate aspect ratio preserving dimensions
+                            const aspectRatio = image.width / image.height;
+                            let drawWidth = canvas.width;
+                            let drawHeight = canvas.height;
+                            
+                            if (canvas.width / aspectRatio > canvas.height) {
+                                drawWidth = canvas.height * aspectRatio;
+                            } else {
+                                drawHeight = canvas.width / aspectRatio;
+                            }
+                            
+                            // Calculate centering offsets
+                            const offsetX = (canvas.width - drawWidth) / 2;
+                            const offsetY = (canvas.height - drawHeight) / 2;
+
+                            // Clear canvas with black background
+                            ctx.fillStyle = 'black';
+                            ctx.fillRect(0, 0, canvas.width, canvas.height);
+                            
+                            // Draw new frame
+                            ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+                            
+                            // Clean up
+                            URL.revokeObjectURL(imageUrl);
+                        } catch (drawError) {
+                            console.error('Error drawing image:', drawError);
+                            URL.revokeObjectURL(imageUrl);
+                        }
+                    };
+
+                    image.onerror = (err) => {
+                        console.error('Error loading image:', {
+                            error: err,
+                            blobSize: blob.size,
+                            blobType: blob.type,
+                            dataLength: uint8Array.length
+                        });
+                        URL.revokeObjectURL(imageUrl);
+                    };
+
+                    image.src = imageUrl;
+                } catch (error) {
+                    console.error('Error processing stream data:', error);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                status.textContent = 'Status: Connection Error';
+                status.className = 'status error';
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                
+                if (!isIntentionallyStopped && reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    console.log(`Reconnecting... Attempt ${reconnectAttempts} of ${maxReconnectAttempts}`);
+                    status.textContent = `Status: Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})`;
+                    setTimeout(connectWebSocket, 2000);
+                } else {
+                    status.textContent = isIntentionallyStopped ? 'Status: Stopped' : 'Status: Connection Failed';
+                    status.className = isIntentionallyStopped ? 'status' : 'status error';
+                }
+            };
+        }
 
         function closeWebSocket() {
             if (ws) {
@@ -168,111 +247,64 @@
             }
         }
 
-        function connectWebSocket() {
-            closeWebSocket();
+        startBtn.addEventListener('click', () => {
+            if (!rtspUrl.value) {
+                alert('Please enter an RTSP URL');
+                return;
+            }
 
-            console.log('Connecting to WebSocket...');
-            ws = new WebSocket('ws://127.0.0.1:9999');
+            isIntentionallyStopped = false;
+            status.textContent = 'Status: Starting...';
+            status.className = 'status';
+            reconnectAttempts = 0;
+            ipcRenderer.send('start-stream', rtspUrl.value);
+            connectWebSocket();
             
-            // Set binary type to arraybuffer
-            ws.binaryType = 'arraybuffer';
-            
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                status.textContent = 'Status: Connected';
-                status.className = 'status';
-                reconnectAttempts = 0;
-            };
-
-            ws.onmessage = async (msg) => {
-                try {
-                    // Convert ArrayBuffer to Uint8Array
-                    const uint8Array = new Uint8Array(msg.data);
-                    
-                    // Create blob URL
-                    const blob = new Blob([uint8Array], { type: 'image/jpeg' });
-                    const imageUrl = URL.createObjectURL(blob);
-                    
-                    // Create new image and set source
-                    const image = new Image();
-                    
-                    // Set up onload before setting src
-                    image.onload = () => {
-                        try {
-                            // Clear previous frame
-                            ctx.clearRect(0, 0, canvas.width, canvas.height);
-                            
-                            // Draw new frame
-                            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-                            
-                            // Clean up
-                            URL.revokeObjectURL(imageUrl);
-                        } catch (drawError) {
-                            console.error('Error drawing image:', drawError);
-                        }
-                    };
-                    
-                    // Set up onerror before setting src
-                    image.onerror = (err) => {
-                        console.error('Error loading image:', err);
-                        URL.revokeObjectURL(imageUrl);
-                    };
-                    
-                    // Set the image source
-                    image.src = imageUrl;
-                } catch (error) {
-                    console.error('Error processing stream data:', error);
-                }
-            };
-
-            ws.onerror = (error) => {
-                console.error('WebSocket Error:', error);
-                status.textContent = 'Status: Connection Error';
-                status.className = 'status error';
-            };
-
-            ws.onclose = () => {
-                console.log('WebSocket closed');
-                
-                // Only attempt to reconnect if not intentionally stopped
-                if (!isIntentionallyStopped && reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++;
-                    console.log(`Reconnecting... Attempt ${reconnectAttempts} of ${maxReconnectAttempts}`);
-                    status.textContent = `Status: Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})`;
-                    setTimeout(connectWebSocket, 2000);
-                } else {
-                    status.textContent = isIntentionallyStopped ? 'Status: Stopped' : 'Status: Connection Failed';
-                    status.className = isIntentionallyStopped ? 'status' : 'status error';
-                }
-            };
-        }
-
-        ipcRenderer.on('stream-started', () => {
-            console.log('Stream started from main process');
+            startBtn.style.display = 'none';
+            stopBtn.style.display = 'inline-block';
         });
 
-        ipcRenderer.on('stream-stopped', () => {
+        stopBtn.addEventListener('click', () => {
+            isIntentionallyStopped = true;
+            ipcRenderer.send('stop-stream');
             closeWebSocket();
             status.textContent = 'Status: Stopped';
             status.className = 'status';
-            // Clear canvas
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        });
-
-        ipcRenderer.on('stream-error', (event, error) => {
-            console.error('Stream error from main process:', error);
-            status.textContent = `Status: Error - ${error}`;
-            status.className = 'status error';
             
-            // Show start button and hide stop button on error
+            // Clear canvas with black background
+            ctx.fillStyle = 'black';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
             startBtn.style.display = 'inline-block';
             stopBtn.style.display = 'none';
         });
 
-        // Handle page unload
-        window.addEventListener('beforeunload', () => {
-            closeWebSocket();
+        // Handle IPC events
+        ipcRenderer.on('stream-started', () => {
+            console.log('Stream started');
+            status.textContent = 'Status: Stream started';
+            status.className = 'status';
         });
+
+        ipcRenderer.on('stream-stopped', () => {
+            console.log('Stream stopped');
+            status.textContent = 'Status: Stopped';
+            status.className = 'status';
+            startBtn.style.display = 'inline-block';
+            stopBtn.style.display = 'none';
+        });
+
+        ipcRenderer.on('stream-error', (event, error) => {
+            console.error('Stream error:', error);
+            status.textContent = `Status: Error - ${error}`;
+            status.className = 'status error';
+            startBtn.style.display = 'inline-block';
+            stopBtn.style.display = 'none';
+        });
+
+        // Prevent drag and drop on the window
+        document.addEventListener('dragover', (e) => e.preventDefault());
+        document.addEventListener('drop', (e) => e.preventDefault());
     </script>
 </body>
 </html> 
