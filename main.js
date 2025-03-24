@@ -351,7 +351,15 @@ function captureFrame(rtspUrl) {
                     reject(new Error(`Failed to read captured frame: ${err.message}`));
                 }
             } else {
-                reject(new Error(`FFmpeg process failed with code ${code}: ${ffmpegError}`));
+                let errorMessage = `FFmpeg process failed with code ${code}`;
+                if (ffmpegError.includes('Connection refused')) {
+                    errorMessage = 'Connection refused. Please check if the camera is online and accessible.';
+                } else if (ffmpegError.includes('Connection timed out')) {
+                    errorMessage = 'Connection timed out. Please check network connectivity.';
+                } else if (ffmpegError.includes('Authentication failed')) {
+                    errorMessage = 'Authentication failed. Please check camera credentials.';
+                }
+                reject(new Error(errorMessage));
             }
         });
 
@@ -382,15 +390,28 @@ async function startCapture() {
 
         ffmpegProcess.stderr.on('data', (data) => {
             console.log(`FFmpeg: ${data}`);
+            // Check for common FFmpeg errors
+            const errorMsg = data.toString();
+            if (errorMsg.includes('Connection refused') || errorMsg.includes('Connection timed out')) {
+                mainWindow.webContents.send('stream-error', 'Connection failed. Please check the RTSP URL and network connection.');
+            } else if (errorMsg.includes('Authentication failed')) {
+                mainWindow.webContents.send('stream-error', 'Authentication failed. Please check username and password in RTSP URL.');
+            } else if (errorMsg.includes('No such file or directory')) {
+                mainWindow.webContents.send('stream-error', 'Invalid RTSP URL. Please check the URL format.');
+            }
         });
 
         ffmpegProcess.on('error', (error) => {
             console.error('FFmpeg process error:', error);
+            mainWindow.webContents.send('stream-error', 'Failed to start FFmpeg. Please check if FFmpeg is installed correctly.');
             stopCapture();
         });
 
         ffmpegProcess.on('close', (code) => {
             console.log(`FFmpeg process exited with code ${code}`);
+            if (code !== 0) {
+                mainWindow.webContents.send('stream-error', `FFmpeg process exited with code ${code}. Please check the stream connection.`);
+            }
             stopCapture();
         });
 
@@ -411,6 +432,7 @@ async function startCapture() {
         mainWindow.webContents.send('capture-status', { isCapturing: true });
     } catch (error) {
         console.error('Error starting capture:', error);
+        mainWindow.webContents.send('stream-error', `Failed to start capture: ${error.message}`);
         stopCapture();
     }
 }

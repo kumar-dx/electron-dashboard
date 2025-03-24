@@ -113,6 +113,50 @@
             border-radius: 4px;
             background-color: rgba(255, 77, 28, 0.1);
             color: var(--text-dark);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .status-text {
+            flex: 1;
+        }
+        .status-icon {
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+            display: inline-block;
+        }
+        .status-icon::before {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--text-dark);
+        }
+        .status.capturing .status-icon::before {
+            background-color: var(--success);
+            animation: pulse 2s infinite;
+        }
+        .status.error .status-icon::before {
+            background-color: var(--error);
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .error-message {
+            color: var(--error);
+            font-size: 12px;
+            margin-top: 4px;
+            padding: 4px 8px;
+            background-color: rgba(220, 53, 69, 0.1);
+            border-radius: 4px;
+            display: none;
+        }
+        .error-message.visible {
+            display: block;
         }
         .stats-row {
             display: flex;
@@ -237,7 +281,10 @@
             <button onclick="showConfig()">Edit Configuration</button>
         </div>
         <div class="status-container">
-            <div class="status" id="status">Status: Stopped</div>
+            <div class="status" id="status">
+                <div class="status-text">Status: Stopped</div>
+            </div>
+            <div class="error-message" id="errorMessage"></div>
             <div class="stats-row">
                 <div class="capture-stats" id="captureStats">
                     Frames captured: <span id="frameCount">0</span> | Frames uploaded: <span id="uploadCount">0</span>
@@ -263,6 +310,7 @@
         const uploadProgress = document.getElementById('uploadProgress');
         const frameCount = document.getElementById('frameCount');
         const uploadCount = document.getElementById('uploadCount');
+        const errorMessage = document.getElementById('errorMessage');
         let isCapturing = false;
         let framesCaptured = 0;
 
@@ -313,11 +361,29 @@
             configOverlay.classList.remove('hidden');
         }
 
+        function updateStatus(status, isError = false) {
+            const statusElement = document.getElementById('status');
+            statusElement.textContent = `Status: ${status}`;
+            statusElement.className = 'status';
+            
+            if (isError) {
+                statusElement.classList.add('error');
+                errorMessage.textContent = status;
+                errorMessage.classList.add('visible');
+            } else {
+                statusElement.classList.remove('error');
+                errorMessage.classList.remove('visible');
+                if (status === 'Capturing') {
+                    statusElement.classList.add('capturing');
+                }
+            }
+        }
+
         toggleBtn.addEventListener('click', () => {
             const rtspUrl = rtspUrlInput.value.trim();
             
             if (!rtspUrl) {
-                alert('Please enter an RTSP URL');
+                updateStatus('Please enter an RTSP URL', true);
                 return;
             }
 
@@ -326,7 +392,7 @@
                 ipcRenderer.send('start-stream', rtspUrl);
                 toggleBtn.textContent = 'Stop';
                 toggleBtn.classList.add('stop');
-                status.textContent = 'Status: Starting...';
+                updateStatus('Starting...');
                 framesCaptured = 0;
                 frameCount.textContent = '0';
             } else {
@@ -334,28 +400,26 @@
                 ipcRenderer.send('stop-stream');
                 toggleBtn.textContent = 'Start';
                 toggleBtn.classList.remove('stop');
-                status.textContent = 'Status: Stopping...';
+                updateStatus('Stopping...');
             }
         });
 
         ipcRenderer.on('stream-started', () => {
             isCapturing = true;
-            status.textContent = 'Status: Capturing';
-            status.classList.remove('error');
+            updateStatus('Capturing');
         });
 
         ipcRenderer.on('stream-stopped', () => {
             isCapturing = false;
-            status.textContent = 'Status: Stopped';
+            updateStatus('Stopped');
             toggleBtn.textContent = 'Start';
             toggleBtn.classList.remove('stop');
         });
 
         ipcRenderer.on('stream-error', (event, error) => {
-            status.textContent = `Status: Error - ${error}`;
-            status.classList.add('error');
             isCapturing = false;
-            toggleBtn.textContent = 'Start Capture';
+            updateStatus('Error', true);
+            toggleBtn.textContent = 'Start';
             toggleBtn.classList.remove('stop');
         });
 
