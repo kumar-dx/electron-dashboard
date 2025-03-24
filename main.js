@@ -56,22 +56,11 @@ function findFFmpegPath() {
 
 // Default configuration from environment variables
 const defaultConfig = {
-    baseUrl: process.env.BASE_URL,
+    baseUrl: process.env.BASE_URL || 'http://localhost:3000', // Default fallback
     frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10), // 30 seconds
     frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10),
-    apiKey: process.env.API_KEY
+    apiKey: process.env.API_KEY || 'default-key' // Default fallback
 };
-
-// Ensure required environment variables are available
-if (!process.env.BASE_URL) {
-    console.error('BASE_URL is not set in environment variables');
-    app.quit();
-}
-
-if (!process.env.API_KEY) {
-    console.error('API_KEY is not set in environment variables');
-    app.quit();
-}
 
 async function loadConfig() {
     try {
@@ -204,77 +193,80 @@ async function cleanupAndUploadRemaining() {
 
 async function createWindow() {
     try {
-        await verifyFFmpeg();
+        // Load config first
+        await loadConfig();
+        
+        // Then verify FFmpeg
+        try {
+            await verifyFFmpeg();
+        } catch (error) {
+            console.error('FFmpeg verification failed:', error);
+            // Don't quit, just show warning
+            await dialog.showMessageBox({
+                type: 'warning',
+                title: 'FFmpeg Warning',
+                message: 'FFmpeg is not properly configured',
+                detail: error.message + '\n\nPlease install FFmpeg or set the correct path in the FFMPEG_PATH environment variable.\n\nYou can still use the application, but frame capture will not work.'
+            });
+        }
+
+        mainWindow = new BrowserWindow({
+            width: 500,
+            height: 360,
+            resizable: false,
+            minimizable: true,
+            maximizable: true,
+            autoHideMenuBar: true,
+            title: 'Veronica | DriveX',
+            icon: config.iconPath,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false,
+                webSecurity: false,
+                enableRemoteModule: true
+            }
+        });
+
+        require('@electron/remote/main').enable(mainWindow.webContents);
+        
+        mainWindow.loadFile('index.html');
+        
+        if (process.env.NODE_ENV === 'development') {
+            mainWindow.webContents.openDevTools();
+        }
+
+        // Prevent window from closing directly
+        mainWindow.on('close', async (e) => {
+            if (isCapturing || capturedFrames.length > 0) {
+                e.preventDefault();
+                const choice = await dialog.showMessageBox(mainWindow, {
+                    type: 'warning',
+                    buttons: ['Stop Stream and Upload Remaining Images', 'Cancel'],
+                    defaultId: 0,
+                    cancelId: 1,
+                    title: 'Confirm Exit',
+                    message: 'There are frames being captured or pending upload.',
+                    detail: 'Would you like to stop the stream and upload remaining images before exiting?'
+                });
+
+                if (choice.response === 0) {
+                    await cleanupAndUploadRemaining();
+                    mainWindow.destroy();
+                }
+            } else {
+                mainWindow.destroy();
+            }
+        });
     } catch (error) {
+        console.error('Error creating window:', error);
         await dialog.showMessageBox({
             type: 'error',
-            title: 'FFmpeg Error',
-            message: 'FFmpeg is not properly configured',
-            detail: error.message + '\n\nPlease install FFmpeg or set the correct path in the FFMPEG_PATH environment variable.'
+            title: 'Application Error',
+            message: 'Failed to start application',
+            detail: error.message + '\n\nPlease check the application logs for more details.'
         });
         app.quit();
-        return;
     }
-
-    mainWindow = new BrowserWindow({
-        width: 500,
-        height: 360,
-        resizable: false,
-        minimizable: true,
-        maximizable: true,
-        autoHideMenuBar: true,
-        title: 'Veronica | DriveX',
-        icon: config.iconPath,
-        webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
-            webSecurity: false,
-            enableRemoteModule: true
-        }
-    });
-
-    require('@electron/remote/main').enable(mainWindow.webContents);
-    
-    mainWindow.loadFile('index.html');
-    
-    if (process.env.NODE_ENV === 'development') {
-        mainWindow.webContents.openDevTools();
-    }
-
-    // Prevent window from closing directly
-    mainWindow.on('close', async (e) => {
-        if (isCapturing || capturedFrames.length > 0) {
-            e.preventDefault();
-            const choice = await dialog.showMessageBox(mainWindow, {
-                type: 'warning',
-                buttons: ['Stop Stream and Upload Remaining Images', 'Cancel'],
-                defaultId: 0,
-                title: 'Confirm Exit',
-                message: isCapturing 
-                    ? 'The stream is still running and there might be images to upload. Do you want to stop it and upload remaining images?'
-                    : 'There are still images to upload. Do you want to upload them before exiting?'
-            });
-            
-            if (choice.response === 0) {
-                try {
-                    // Show uploading dialog
-                    mainWindow.webContents.send('show-upload-progress');
-                    
-                    // Cleanup and upload remaining images
-                    await cleanupAndUploadRemaining();
-                    
-                    mainWindow.destroy();
-                } catch (error) {
-                    console.error('Error during cleanup:', error);
-                    dialog.showMessageBox(mainWindow, {
-                        type: 'error',
-                        title: 'Error',
-                        message: 'There was an error uploading remaining images. Some images might not have been uploaded.'
-                    }).then(() => mainWindow.destroy());
-                }
-            }
-        }
-    });
 }
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling
@@ -616,4 +608,15 @@ ipcMain.handle('load-config', async () => {
 ipcMain.handle('save-config', async (event, newConfig) => {
     await saveConfig(newConfig);
     return true;
+});
+
+// Add error handlers for uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    dialog.showErrorBox('Application Error', error.message);
+});
+
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled Rejection:', error);
+    dialog.showErrorBox('Application Error', error.message);
 }); 
