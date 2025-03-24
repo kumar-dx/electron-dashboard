@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const Stream = require('node-rtsp-stream');
 const axios = require('axios');
@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const FormData = require('form-data');
 require('dotenv').config();
+require('@electron/remote/main').initialize();
 
 let mainWindow;
 let stream;
@@ -14,25 +15,140 @@ let capturedFrames = [];
 let captureInterval;
 let uploadInterval;
 let ffmpegProcess;
+let appConfig = null;
 
 // Platform-specific configurations
 const isWindows = process.platform === 'win32';
 const isMac = process.platform === 'darwin';
 
-// Configuration
-const config = {
-    apiEndpoint: process.env.API_ENDPOINT || 'http://localhost:8000/api/v1/analytics/process-local-images/',
-    apiKey: process.env.API_KEY || 'vrqouhciwtykfummlaqryyxexnkhtvvi',
-    storeId: parseInt(process.env.STORE_ID || '111', 10),
-    frameCapturePath: path.join(app.getPath('userData'), 'captured_frames'),
+// Configuration paths
+const configPath = path.join(app.getPath('userData'), 'config.json');
+
+// Default configuration from environment variables
+const defaultConfig = {
+    baseUrl: process.env.BASE_URL,
     frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10),
     frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10),
+    apiKey: process.env.API_KEY
+};
+
+// Ensure required environment variables are available
+if (!process.env.BASE_URL) {
+    console.error('BASE_URL is not set in environment variables');
+    app.quit();
+}
+
+if (!process.env.API_KEY) {
+    console.error('API_KEY is not set in environment variables');
+    app.quit();
+}
+
+async function loadConfig() {
+    try {
+        let savedConfig = {};
+        if (fsSync.existsSync(configPath)) {
+            const configData = await fs.readFile(configPath, 'utf8');
+            savedConfig = JSON.parse(configData);
+        }
+
+        // Only use store ID and RTSP URL from saved config
+        appConfig = {
+            ...defaultConfig,
+            storeId: savedConfig.storeId,
+            rtspUrl: savedConfig.rtspUrl
+        };
+
+        return appConfig;
+    } catch (error) {
+        console.error('Error loading config:', error);
+        appConfig = { ...defaultConfig };
+        return appConfig;
+    }
+}
+
+async function saveConfig(config) {
+    try {
+        // Only save store ID and RTSP URL
+        const configToSave = {
+            storeId: config.storeId,
+            rtspUrl: config.rtspUrl
+        };
+
+        // Keep environment variables in memory but don't save them
+        appConfig = {
+            ...defaultConfig,
+            ...configToSave
+        };
+
+        await fs.writeFile(configPath, JSON.stringify(configToSave, null, 2));
+        return true;
+    } catch (error) {
+        console.error('Error saving config:', error);
+        throw error;
+    }
+}
+
+// Configuration
+const config = {
+    frameCapturePath: path.join(app.getPath('userData'), 'captured_frames'),
     ffmpegPath: isWindows ? 'ffmpeg.exe' : 'ffmpeg'
 };
 
 // Create images directory if it doesn't exist
 if (!fsSync.existsSync(config.frameCapturePath)) {
     fsSync.mkdirSync(config.frameCapturePath, { recursive: true });
+}
+
+// Add this function to handle cleanup
+async function cleanupAndUploadRemaining() {
+    // Stop the stream if running
+    if (stream) {
+        stream.stop();
+        stream = null;
+    }
+
+    // Clear intervals
+    if (captureInterval) clearInterval(captureInterval);
+    if (uploadInterval) clearInterval(uploadInterval);
+
+    // Upload any remaining frames
+    if (capturedFrames.length > 0) {
+        console.log(`Uploading ${capturedFrames.length} remaining frames before exit...`);
+        try {
+            await uploadFrames();
+        } catch (error) {
+            console.error('Error uploading remaining frames:', error);
+        }
+    }
+
+    // Check for any files in the capture directory that might have been missed
+    try {
+        const files = await fs.readdir(config.frameCapturePath);
+        const imageFiles = files.filter(file => file.startsWith('frame_') && file.endsWith('.jpg'));
+        
+        if (imageFiles.length > 0) {
+            console.log(`Found ${imageFiles.length} additional images in directory, uploading...`);
+            for (const file of imageFiles) {
+                const filePath = path.join(config.frameCapturePath, file);
+                try {
+                    const data = await fs.readFile(filePath);
+                    capturedFrames.push({
+                        timestamp: new Date().toISOString(),
+                        data: data,
+                        path: filePath
+                    });
+                } catch (err) {
+                    console.error(`Error reading file ${filePath}:`, err);
+                }
+            }
+            
+            if (capturedFrames.length > 0) {
+                await uploadFrames();
+            }
+        }
+    } catch (error) {
+        console.error('Error checking for remaining files:', error);
+    }
 }
 
 function createWindow() {
@@ -42,16 +158,53 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
-            webSecurity: false
+            webSecurity: false,
+            enableRemoteModule: true
         }
     });
 
+    require('@electron/remote/main').enable(mainWindow.webContents);
+    
     mainWindow.loadFile('index.html');
     
-    // Only open DevTools in development
     if (process.env.NODE_ENV === 'development') {
         mainWindow.webContents.openDevTools();
     }
+
+    // Prevent window from closing directly
+    mainWindow.on('close', async (e) => {
+        if (stream || capturedFrames.length > 0) {
+            e.preventDefault();
+            const choice = await dialog.showMessageBox(mainWindow, {
+                type: 'warning',
+                buttons: ['Stop Stream and Upload Remaining Images', 'Cancel'],
+                defaultId: 0,
+                title: 'Confirm Exit',
+                message: stream 
+                    ? 'The stream is still running and there might be images to upload. Do you want to stop it and upload remaining images?'
+                    : 'There are still images to upload. Do you want to upload them before exiting?'
+            });
+            
+            if (choice.response === 0) {
+                try {
+                    // Show uploading dialog
+                    mainWindow.webContents.send('show-upload-progress');
+                    
+                    // Cleanup and upload remaining images
+                    await cleanupAndUploadRemaining();
+                    
+                    mainWindow.destroy();
+                } catch (error) {
+                    console.error('Error during cleanup:', error);
+                    dialog.showMessageBox(mainWindow, {
+                        type: 'error',
+                        title: 'Error',
+                        message: 'There was an error uploading remaining images. Some images might not have been uploaded.'
+                    }).then(() => mainWindow.destroy());
+                }
+            }
+        }
+    });
 }
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling
@@ -70,6 +223,29 @@ app.on('window-all-closed', () => {
 app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
+    }
+});
+
+// Update the stop-stream handler to also handle remaining uploads
+ipcMain.on('stop-stream', async () => {
+    if (stream || capturedFrames.length > 0) {
+        try {
+            await cleanupAndUploadRemaining();
+            mainWindow.webContents.send('stream-stopped');
+        } catch (error) {
+            console.error('Error stopping stream:', error);
+            mainWindow.webContents.send('stream-error', error.message);
+        }
+    }
+});
+
+// Update the before-quit handler
+app.on('before-quit', async (e) => {
+    if (stream || capturedFrames.length > 0) {
+        e.preventDefault();
+        if (mainWindow) {
+            mainWindow.focus();
+        }
     }
 });
 
@@ -121,6 +297,11 @@ function captureFrame(rtspUrl) {
 }
 
 ipcMain.on('start-stream', (event, rtspUrl) => {
+    if (!appConfig) {
+        event.sender.send('stream-error', 'Configuration not loaded. Please configure the application first.');
+        return;
+    }
+
     if (stream) {
         stream.stop();
     }
@@ -133,7 +314,7 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
             name: 'camera',
             streamUrl: rtspUrl,
             wsPort: 9999,
-            host: 'localhost', // Use localhost for both platforms
+            host: 'localhost',
             ffmpegOptions: {
                 '-rtsp_transport': 'tcp',
                 '-use_wallclock_as_timestamps': '1',
@@ -181,14 +362,14 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
                     event.sender.send('stream-error', `Frame capture error: ${error.message}`);
                 }
             }
-        }, config.frameCaptureInterval);
+        }, appConfig.frameCaptureInterval);
 
         // Start upload interval
         uploadInterval = setInterval(async () => {
             if (capturedFrames.length > 0) {
                 await uploadFrames();
             }
-        }, config.frameUploadInterval);
+        }, appConfig.frameUploadInterval);
 
     } catch (error) {
         console.error('Error starting stream:', error);
@@ -196,54 +377,46 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
     }
 });
 
-ipcMain.on('stop-stream', async () => {
-  if (stream) {
-    stream.stop();
-    stream = null;
-
-    // Clear intervals
-    if (captureInterval) clearInterval(captureInterval);
-    if (uploadInterval) clearInterval(uploadInterval);
-
-    await uploadFrames();
-    mainWindow.webContents.send('stream-stopped');
-  }
-});
-
 async function uploadFrames() {
-  if (capturedFrames.length === 0) {
+  if (!appConfig || capturedFrames.length === 0) {
     return;
   }
 
   try {
     const headers = {
-      'X-API-KEY': config.apiKey
+      'X-API-KEY': appConfig.apiKey
     };
 
-    // Create a copy of frames to upload and clear the original array
     const framesToUpload = [...capturedFrames];
     capturedFrames = [];
 
     for (const frame of framesToUpload) {
       try {
+        // Check if file exists before trying to upload
+        try {
+          await fs.access(frame.path);
+        } catch (err) {
+          console.log(`File ${frame.path} no longer exists, skipping...`);
+          continue;
+        }
+
         const formData = new FormData();
         formData.append('timestamp', frame.timestamp);
         
-        // Create a Buffer from the image data and append it with the correct field name
         const imageBuffer = Buffer.from(frame.data);
         formData.append('images', imageBuffer, {
           filename: path.basename(frame.path),
           contentType: 'image/jpeg'
         });
-        
-        formData.append('store_id', config.storeId.toString());
 
-        const response = await axios.post(config.apiEndpoint, formData, { 
+        const apiEndpoint = `${appConfig.baseUrl}/api/v1/analytics/stores/${appConfig.storeId}/upload-images/`;
+        
+        const response = await axios.post(apiEndpoint, formData, { 
           headers: {
             ...headers,
             ...formData.getHeaders()
           },
-          timeout: 30000, // 30 second timeout
+          timeout: 30000,
           maxContentLength: Infinity,
           maxBodyLength: Infinity
         });
@@ -253,24 +426,22 @@ async function uploadFrames() {
         // Delete the file after successful upload
         try {
           await fs.unlink(frame.path);
+          console.log(`Successfully deleted file: ${frame.path}`);
         } catch (deleteError) {
-          console.warn(`Warning: Could not delete frame file ${frame.path}:`, deleteError.message);
+          console.error(`Error deleting file ${frame.path}:`, deleteError.message);
+          // Even if delete fails, we don't need to retry the upload
         }
       } catch (error) {
         let shouldRetry = false;
         let errorMessage = '';
 
         if (error.response) {
-          // Server responded with error status
           errorMessage = `Server Error (${error.response.status}): ${JSON.stringify(error.response.data)}`;
-          // Retry on 5xx server errors
           shouldRetry = error.response.status >= 500;
         } else if (error.request) {
-          // Request made but no response received
           errorMessage = `No response received: ${error.code || 'Unknown error'}`;
           shouldRetry = ['ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT'].includes(error.code);
         } else {
-          // Error in setting up the request
           errorMessage = `Request setup error: ${error.message}`;
           shouldRetry = false;
         }
@@ -278,8 +449,14 @@ async function uploadFrames() {
         console.error(`Error uploading frame from ${frame.path}: ${errorMessage}`);
         
         if (shouldRetry) {
-          console.log(`Adding frame back to queue for retry: ${frame.path}`);
-          capturedFrames.push(frame);
+          // Check if file still exists before adding back to queue
+          try {
+            await fs.access(frame.path);
+            console.log(`Adding frame back to queue for retry: ${frame.path}`);
+            capturedFrames.push(frame);
+          } catch (err) {
+            console.log(`File ${frame.path} no longer exists, skipping retry...`);
+          }
         } else {
           console.log(`Skipping retry for frame: ${frame.path}`);
           try {
@@ -288,6 +465,14 @@ async function uploadFrames() {
               errorLogPath,
               `${new Date().toISOString()} - ${frame.path} - ${errorMessage}\n`
             );
+            
+            // Try to delete failed upload file to free up space
+            try {
+              await fs.unlink(frame.path);
+              console.log(`Deleted failed upload file: ${frame.path}`);
+            } catch (deleteError) {
+              console.error(`Error deleting failed upload file ${frame.path}:`, deleteError.message);
+            }
           } catch (logError) {
             console.error('Failed to write to error log:', logError);
           }
@@ -296,21 +481,29 @@ async function uploadFrames() {
     }
   } catch (error) {
     console.error('Error in uploadFrames:', error);
-    // Add frames back to queue if there's a catastrophic error
-    capturedFrames = [...capturedFrames, ...framesToUpload];
+    // Only add frames back to queue if they still exist
+    for (const frame of framesToUpload) {
+      try {
+        await fs.access(frame.path);
+        capturedFrames.push(frame);
+      } catch (err) {
+        console.log(`File ${frame.path} no longer exists, skipping retry...`);
+      }
+    }
   }
 }
-
-// Clean up on app quit
-app.on('before-quit', () => {
-  if (stream) {
-    stream.stop();
-  }
-  if (captureInterval) clearInterval(captureInterval);
-  if (uploadInterval) clearInterval(uploadInterval);
-});
 
 // Add a function to get the images directory path
 ipcMain.handle('get-images-dir', () => {
   return config.frameCapturePath;
+});
+
+// Handle IPC events for configuration
+ipcMain.handle('load-config', async () => {
+    return await loadConfig();
+});
+
+ipcMain.handle('save-config', async (event, newConfig) => {
+    await saveConfig(newConfig);
+    return true;
 }); 

@@ -20,7 +20,7 @@
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        input[type="text"] {
+        input[type="text"], input[type="number"] {
             width: 100%;
             padding: 10px;
             margin-bottom: 10px;
@@ -81,39 +81,153 @@
             padding: 2px 4px;
             border-radius: 3px;
         }
+        .config-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .config-form {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            width: 90%;
+            max-width: 500px;
+        }
+        .config-form h2 {
+            margin-top: 0;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .save-btn {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .hidden {
+            display: none;
+        }
+        .upload-progress {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <div id="configOverlay" class="config-overlay">
+            <div class="config-form">
+                <h2>Initial Configuration</h2>
+                <div class="form-group">
+                    <label for="storeId">Store ID:</label>
+                    <input type="number" id="storeId" placeholder="Enter store ID" required>
+                </div>
+                <div class="form-group">
+                    <label for="rtspUrl">RTSP URL:</label>
+                    <input type="text" id="rtspUrl" placeholder="Enter RTSP URL" required>
+                </div>
+                <button class="save-btn" onclick="saveConfig()">Save Configuration</button>
+            </div>
+        </div>
+
         <div class="controls">
-            <input type="text" id="rtspUrl" placeholder="Enter RTSP URL (e.g., rtsp://username:password@ip:port/stream)">
+            <input type="text" id="rtspUrlInput" placeholder="Enter RTSP URL (e.g., rtsp://username:password@ip:port/stream)">
             <button id="toggleBtn">Start Stream</button>
+            <button onclick="showConfig()">Edit Configuration</button>
         </div>
         <div class="stream-container">
             <canvas id="streamCanvas" width="1280" height="720"></canvas>
         </div>
         <div class="status" id="status">Status: Stopped</div>
-        <div class="info" id="imagesDirInfo">Images are saved in: <code>Loading...</code></div>
+        <div id="uploadProgress" class="upload-progress hidden">
+            Uploading remaining images... Please wait.
+        </div>
     </div>
 
     <script>
         const { ipcRenderer } = require('electron');
+        const remote = require('@electron/remote');
+        const { dialog } = remote;
         const toggleBtn = document.getElementById('toggleBtn');
-        const rtspUrl = document.getElementById('rtspUrl');
+        const rtspUrlInput = document.getElementById('rtspUrlInput');
         const status = document.getElementById('status');
         const canvas = document.getElementById('streamCanvas');
-        const imagesDirInfo = document.getElementById('imagesDirInfo');
+        const configOverlay = document.getElementById('configOverlay');
+        const uploadProgress = document.getElementById('uploadProgress');
         const ctx = canvas.getContext('2d');
         let ws;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let isStreaming = false;
         let intentionalStop = false;
-        
-        // Add buffer for accumulating chunks
         let frameBuffer = [];
         let frameSize = 0;
-        let isFrameStart = false;
+
+        // Load configuration on startup
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const config = await ipcRenderer.invoke('load-config');
+                if (!config || (!config.storeId && !config.rtspUrl)) {
+                    configOverlay.classList.remove('hidden');
+                } else {
+                    configOverlay.classList.add('hidden');
+                    rtspUrlInput.value = config.rtspUrl;
+                    
+                    // Update form fields with existing values
+                    document.getElementById('storeId').value = config.storeId || '';
+                    document.getElementById('rtspUrl').value = config.rtspUrl || '';
+                }
+            } catch (error) {
+                console.error('Error loading configuration:', error);
+                configOverlay.classList.remove('hidden');
+            }
+        });
+
+        async function saveConfig() {
+            const storeId = parseInt(document.getElementById('storeId').value, 10);
+            const rtspUrl = document.getElementById('rtspUrl').value.trim();
+
+            if (!storeId || !rtspUrl) {
+                alert('Please fill in Store ID and RTSP URL');
+                return;
+            }
+
+            try {
+                const config = {
+                    storeId,
+                    rtspUrl
+                };
+
+                await ipcRenderer.invoke('save-config', config);
+                configOverlay.classList.add('hidden');
+                rtspUrlInput.value = rtspUrl;
+            } catch (error) {
+                alert('Error saving configuration: ' + error.message);
+            }
+        }
+
+        function showConfig() {
+            configOverlay.classList.remove('hidden');
+        }
 
         // Function to check for JPEG markers
         function findJPEGMarkers(data) {
@@ -188,19 +302,9 @@
             }
         }
 
-        // Get and display the images directory path
-        (async () => {
-            try {
-                const imagesDir = await ipcRenderer.invoke('get-images-dir');
-                imagesDirInfo.innerHTML = `Images are saved in: <code>${imagesDir}</code>`;
-            } catch (error) {
-                console.error('Error getting images directory:', error);
-            }
-        })();
-
         toggleBtn.addEventListener('click', () => {
             if (!isStreaming) {
-                if (!rtspUrl.value) {
+                if (!rtspUrlInput.value) {
                     alert('Please enter an RTSP URL');
                     return;
                 }
@@ -208,7 +312,7 @@
                 status.textContent = 'Status: Starting...';
                 status.className = 'status';
                 reconnectAttempts = 0;
-                ipcRenderer.send('start-stream', rtspUrl.value);
+                ipcRenderer.send('start-stream', rtspUrlInput.value);
                 connectWebSocket();
                 toggleBtn.textContent = 'Stop Stream';
                 toggleBtn.classList.add('stop');
@@ -433,6 +537,7 @@
             isStreaming = false;
             toggleBtn.textContent = 'Start Stream';
             toggleBtn.classList.remove('stop');
+            uploadProgress.classList.add('hidden');
         });
 
         ipcRenderer.on('stream-error', (event, error) => {
@@ -447,6 +552,19 @@
         // Handle page unload
         window.addEventListener('beforeunload', () => {
             closeWebSocket();
+        });
+
+        // Handle window close
+        window.onbeforeunload = (e) => {
+            if (isStreaming) {
+                e.returnValue = false;
+                return false;
+            }
+        };
+
+        // Add upload progress handler
+        ipcRenderer.on('show-upload-progress', () => {
+            uploadProgress.classList.remove('hidden');
         });
     </script>
 </body>
