@@ -116,10 +116,12 @@
         }
         .stats-row {
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: space-between;
             margin-top: 8px;
             padding: 4px 0;
+            gap: 10px;
         }
         .capture-stats {
             font-size: 14px;
@@ -238,7 +240,7 @@
             <div class="status" id="status">Status: Stopped</div>
             <div class="stats-row">
                 <div class="capture-stats" id="captureStats">
-                    Frames captured: <span id="frameCount">0</span>
+                    Frames captured: <span id="frameCount">0</span> | Frames uploaded: <span id="uploadCount">0</span>
                 </div>
                 <div class="folder-link">
                     <a href="#" id="openFolderLink" onclick="openImagesFolder()">View Captured Frames</a>
@@ -260,6 +262,7 @@
         const configOverlay = document.getElementById('configOverlay');
         const uploadProgress = document.getElementById('uploadProgress');
         const frameCount = document.getElementById('frameCount');
+        const uploadCount = document.getElementById('uploadCount');
         let isCapturing = false;
         let framesCaptured = 0;
 
@@ -363,6 +366,10 @@
 
         ipcRenderer.on('show-upload-progress', () => {
             uploadProgress.classList.remove('hidden');
+        });
+
+        ipcRenderer.on('upload-stats', (event, stats) => {
+            document.getElementById('uploadCount').textContent = stats.uploadedFramesCount;
         });
 
         async function openImagesFolder() {

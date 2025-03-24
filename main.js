@@ -15,6 +15,7 @@ let uploadInterval;
 let ffmpegProcess;
 let appConfig = null;
 let isCapturing = false;
+let uploadedFramesCount = 0;
 
 // Platform-specific configurations
 const isWindows = process.platform === 'win32';
@@ -56,7 +57,7 @@ function findFFmpegPath() {
 // Default configuration from environment variables
 const defaultConfig = {
     baseUrl: process.env.BASE_URL,
-    frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10),
+    frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10), // 30 seconds
     frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10),
     apiKey: process.env.API_KEY
 };
@@ -217,7 +218,7 @@ async function createWindow() {
 
     mainWindow = new BrowserWindow({
         width: 500,
-        height: 340,
+        height: 360,
         resizable: false,
         minimizable: true,
         maximizable: true,
@@ -365,6 +366,55 @@ function captureFrame(rtspUrl) {
     });
 }
 
+async function startCapture() {
+    if (isCapturing) return;
+    
+    try {
+        // Start FFmpeg process
+        ffmpegProcess = spawn(config.ffmpegPath, [
+            '-i', appConfig.rtspUrl,
+            '-vf', 'fps=1/30', // Capture one frame every 30 seconds
+            '-frame_pts', '1',
+            '-q:v', '2',
+            '-f', 'image2',
+            path.join(config.frameCapturePath, 'frame_%d.jpg')
+        ]);
+
+        ffmpegProcess.stderr.on('data', (data) => {
+            console.log(`FFmpeg: ${data}`);
+        });
+
+        ffmpegProcess.on('error', (error) => {
+            console.error('FFmpeg process error:', error);
+            stopCapture();
+        });
+
+        ffmpegProcess.on('close', (code) => {
+            console.log(`FFmpeg process exited with code ${code}`);
+            stopCapture();
+        });
+
+        // Capture first frame immediately
+        await captureFrame();
+
+        // Set up interval for subsequent captures
+        captureInterval = setInterval(async () => {
+            await captureFrame();
+        }, appConfig.frameCaptureInterval);
+
+        // Set up upload interval
+        uploadInterval = setInterval(async () => {
+            await uploadFrames();
+        }, appConfig.frameUploadInterval);
+
+        isCapturing = true;
+        mainWindow.webContents.send('capture-status', { isCapturing: true });
+    } catch (error) {
+        console.error('Error starting capture:', error);
+        stopCapture();
+    }
+}
+
 ipcMain.on('start-stream', (event, rtspUrl) => {
     if (!appConfig) {
         event.sender.send('stream-error', 'Configuration not loaded. Please configure the application first.');
@@ -377,6 +427,8 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
     }
 
     isCapturing = true;
+    uploadedFramesCount = 0;
+    mainWindow.webContents.send('upload-stats', { uploadedFramesCount });
 
     try {
         // Start frame capture interval
@@ -457,6 +509,8 @@ async function uploadFrames() {
         });
 
         console.log(`Successfully uploaded frame from: ${frame.path}`);
+        uploadedFramesCount++;
+        mainWindow.webContents.send('upload-stats', { uploadedFramesCount });
         
         // Delete the file after successful upload
         try {
@@ -464,7 +518,6 @@ async function uploadFrames() {
           console.log(`Successfully deleted file: ${frame.path}`);
         } catch (deleteError) {
           console.error(`Error deleting file ${frame.path}:`, deleteError.message);
-          // Even if delete fails, we don't need to retry the upload
         }
       } catch (error) {
         let shouldRetry = false;
