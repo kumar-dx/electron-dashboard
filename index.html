@@ -3,83 +3,152 @@
 <head>
     <title>Veronica | DriveX</title>
     <style>
+        :root {
+            --primary-color: #FF4D1C;
+            --primary-dark: #e63900;
+            --primary-light: #ff704d;
+            --text-dark: #2C3E50;
+            --text-light: #ffffff;
+            --background: #f8f9fa;
+            --surface: #ffffff;
+            --error: #dc3545;
+            --success: #28a745;
+        }
+
         body {
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 20px;
-            background-color: #f0f0f0;
+            padding: 12px;
+            background-color: var(--background);
+            color: var(--text-dark);
         }
         .container {
-            max-width: 1000px;
+            max-width: 470px;
             margin: 0 auto;
+            min-width: 300px;
+        }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 12px;
+            padding: 12px;
+            background-color: var(--surface);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header img {
+            width: 32px;
+            height: 32px;
+            margin-right: 12px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: #000000;
+            font-weight: normal;
+        }
+        .header span {
+            color: var(--primary-color);
+            font-weight: bold;
+            margin-left: 5px;
+            font-size: 16px;
         }
         .controls {
-            margin-bottom: 20px;
-            padding: 20px;
-            background-color: white;
+            margin-bottom: 12px;
+            padding: 12px;
+            background-color: var(--surface);
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         input[type="text"], input[type="number"] {
             width: 100%;
-            padding: 10px;
-            margin-bottom: 10px;
+            padding: 8px;
+            margin-bottom: 8px;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 14px;
+            color: var(--text-dark);
+        }
+        input[type="text"]:focus, input[type="number"]:focus {
+            border-color: var(--primary-color);
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(255, 77, 28, 0.2);
         }
         button {
-            padding: 10px 20px;
+            padding: 8px 16px;
             border: none;
             border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
-            margin-right: 10px;
+            margin-right: 8px;
+            background-color: #e8e8e8;
+            color: var(--text-dark);
+            transition: all 0.2s ease;
+        }
+        button:hover {
+            background-color: #d8d8d8;
         }
         #toggleBtn {
-            background-color: #4CAF50;
-            color: white;
+            background-color: var(--primary-color);
+            color: var(--text-light);
             width: 120px;
         }
+        #toggleBtn:hover {
+            background-color: var(--primary-dark);
+        }
         #toggleBtn.stop {
-            background-color: #f44336;
+            background-color: var(--error);
         }
-        .stream-container {
-            background-color: black;
-            padding: 10px;
+        .status-container {
+            background-color: var(--surface);
+            padding: 12px;
             border-radius: 8px;
-            margin-top: 20px;
-            min-height: 480px;
-            position: relative;
-        }
-        #streamCanvas {
-            width: 100%;
-            max-width: 1280px;
-            height: auto;
-            display: block;
-            margin: 0 auto;
+            margin-top: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         .status {
-            margin-top: 10px;
-            padding: 10px;
+            margin-top: 8px;
+            padding: 8px;
             border-radius: 4px;
-            background-color: #e8e8e8;
+            background-color: rgba(255, 77, 28, 0.1);
+            color: var(--text-dark);
+        }
+        .stats-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 8px;
+            padding: 4px 0;
+        }
+        .capture-stats {
+            font-size: 14px;
+            color: var(--text-dark);
+        }
+        .folder-link {
+            font-size: 14px;
+        }
+        .folder-link a {
+            color: var(--primary-color);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            transition: color 0.2s ease;
+        }
+        .folder-link a:hover {
+            color: var(--primary-dark);
+            text-decoration: none;
         }
         .error {
-            color: #f44336;
+            color: var(--error);
             font-weight: bold;
         }
         .info {
             margin-top: 10px;
             padding: 10px;
-            background-color: #e8f5e9;
+            background-color: rgba(255, 77, 28, 0.1);
             border-radius: 4px;
             font-size: 14px;
-        }
-        .info code {
-            background-color: #f5f5f5;
-            padding: 2px 4px;
-            border-radius: 3px;
         }
         .config-overlay {
             position: fixed;
@@ -94,7 +163,7 @@
             z-index: 1000;
         }
         .config-form {
-            background-color: white;
+            background-color: var(--surface);
             padding: 30px;
             border-radius: 8px;
             width: 90%;
@@ -103,6 +172,7 @@
         .config-form h2 {
             margin-top: 0;
             margin-bottom: 20px;
+            color: var(--primary-color);
         }
         .form-group {
             margin-bottom: 15px;
@@ -111,10 +181,14 @@
             display: block;
             margin-bottom: 5px;
             font-weight: bold;
+            color: var(--text-dark);
         }
         .save-btn {
-            background-color: #4CAF50;
-            color: white;
+            background-color: var(--primary-color);
+            color: var(--text-light);
+        }
+        .save-btn:hover {
+            background-color: var(--primary-dark);
         }
         .hidden {
             display: none;
@@ -124,16 +198,22 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
+            background: rgba(44, 62, 80, 0.95);
+            color: var(--text-light);
             padding: 20px;
             border-radius: 8px;
             z-index: 1000;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
     </style>
 </head>
 <body>
     <div class="container">
+        <div class="header">
+            <img src="assets/icon.ico" alt="DriveX Logo">
+            <h1>Veronica</h1>
+        </div>
+        
         <div id="configOverlay" class="config-overlay">
             <div class="config-form">
                 <h2>Initial Configuration</h2>
@@ -151,13 +231,20 @@
 
         <div class="controls">
             <input type="text" id="rtspUrlInput" placeholder="Enter RTSP URL (e.g., rtsp://username:password@ip:port/stream)">
-            <button id="toggleBtn">Start Stream</button>
+            <button id="toggleBtn">Start</button>
             <button onclick="showConfig()">Edit Configuration</button>
         </div>
-        <div class="stream-container">
-            <canvas id="streamCanvas" width="1280" height="720"></canvas>
+        <div class="status-container">
+            <div class="status" id="status">Status: Stopped</div>
+            <div class="stats-row">
+                <div class="capture-stats" id="captureStats">
+                    Frames captured: <span id="frameCount">0</span>
+                </div>
+                <div class="folder-link">
+                    <a href="#" id="openFolderLink" onclick="openImagesFolder()">View Captured Frames</a>
+                </div>
+            </div>
         </div>
-        <div class="status" id="status">Status: Stopped</div>
         <div id="uploadProgress" class="upload-progress hidden">
             Uploading remaining images... Please wait.
         </div>
@@ -170,17 +257,11 @@
         const toggleBtn = document.getElementById('toggleBtn');
         const rtspUrlInput = document.getElementById('rtspUrlInput');
         const status = document.getElementById('status');
-        const canvas = document.getElementById('streamCanvas');
         const configOverlay = document.getElementById('configOverlay');
         const uploadProgress = document.getElementById('uploadProgress');
-        const ctx = canvas.getContext('2d');
-        let ws;
-        let reconnectAttempts = 0;
-        const maxReconnectAttempts = 5;
-        let isStreaming = false;
-        let intentionalStop = false;
-        let frameBuffer = [];
-        let frameSize = 0;
+        const frameCount = document.getElementById('frameCount');
+        let isCapturing = false;
+        let framesCaptured = 0;
 
         // Load configuration on startup
         document.addEventListener('DOMContentLoaded', async () => {
@@ -229,343 +310,66 @@
             configOverlay.classList.remove('hidden');
         }
 
-        // Function to check for JPEG markers
-        function findJPEGMarkers(data) {
-            // Look for JPEG start marker (FFD8)
-            for (let i = 0; i < data.length - 1; i++) {
-                if (data[i] === 0xFF && data[i + 1] === 0xD8) {
-                    return { start: i, isStart: true };
-                }
-                if (data[i] === 0xFF && data[i + 1] === 0xD9) {
-                    return { start: i, isStart: false };
-                }
-            }
-            return null;
-        }
-
-        // Function to process a complete frame
-        function processFrame(frameData) {
-            try {
-                // Verify this is a valid JPEG (starts with FFD8 and ends with FFD9)
-                if (frameData.length < 4 || 
-                    frameData[0] !== 0xFF || frameData[1] !== 0xD8 ||
-                    frameData[frameData.length - 2] !== 0xFF || frameData[frameData.length - 1] !== 0xD9) {
-                    console.log('Invalid JPEG frame detected, skipping...');
-                    return;
-                }
-
-                console.log('Processing frame of size:', frameData.length);
-                
-                // Convert to base64
-                const base64String = btoa(String.fromCharCode.apply(null, frameData));
-                const dataUrl = `data:image/jpeg;base64,${base64String}`;
-                
-                // Create new image and set source
-                const image = new Image();
-                
-                // Set up onload before setting src
-                image.onload = () => {
-                    try {
-                        console.log('Image loaded successfully:', image.width, 'x', image.height);
-                        // Clear previous frame
-                        ctx.clearRect(0, 0, canvas.width, canvas.height);
-                        
-                        // Draw new frame
-                        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-                        status.textContent = 'Status: Streaming';
-                        status.className = 'status';
-                    } catch (drawError) {
-                        console.error('Error drawing image:', drawError);
-                        status.textContent = 'Status: Error drawing image';
-                        status.className = 'status error';
-                    }
-                };
-                
-                // Set up onerror before setting src
-                image.onerror = (err) => {
-                    console.error('Error loading image:', {
-                        error: err,
-                        frameSize: frameData.length,
-                        startBytes: Array.from(frameData.slice(0, 4)).map(b => b.toString(16)).join(' '),
-                        endBytes: Array.from(frameData.slice(-4)).map(b => b.toString(16)).join(' ')
-                    });
-                    status.textContent = 'Status: Error loading image frame';
-                    status.className = 'status error';
-                };
-                
-                // Set the image source
-                image.src = dataUrl;
-            } catch (error) {
-                console.error('Error processing complete frame:', error);
-                status.textContent = 'Status: Error processing frame';
-                status.className = 'status error';
-            }
-        }
-
         toggleBtn.addEventListener('click', () => {
-            if (!isStreaming) {
-                if (!rtspUrlInput.value) {
-                    alert('Please enter an RTSP URL');
-                    return;
-                }
-                // Start streaming
-                status.textContent = 'Status: Starting...';
-                status.className = 'status';
-                reconnectAttempts = 0;
-                ipcRenderer.send('start-stream', rtspUrlInput.value);
-                connectWebSocket();
-                toggleBtn.textContent = 'Stop Stream';
+            const rtspUrl = rtspUrlInput.value.trim();
+            
+            if (!rtspUrl) {
+                alert('Please enter an RTSP URL');
+                return;
+            }
+
+            if (!isCapturing) {
+                // Start capture
+                ipcRenderer.send('start-stream', rtspUrl);
+                toggleBtn.textContent = 'Stop';
                 toggleBtn.classList.add('stop');
-                isStreaming = true;
+                status.textContent = 'Status: Starting...';
+                framesCaptured = 0;
+                frameCount.textContent = '0';
             } else {
-                // Stop streaming
+                // Stop capture
                 ipcRenderer.send('stop-stream');
-                closeWebSocket();
-                status.textContent = 'Status: Stopped';
-                status.className = 'status';
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                toggleBtn.textContent = 'Start Stream';
+                toggleBtn.textContent = 'Start';
                 toggleBtn.classList.remove('stop');
-                isStreaming = false;
+                status.textContent = 'Status: Stopping...';
             }
         });
 
-        function closeWebSocket() {
-            if (ws) {
-                intentionalStop = true;
-                ws.close();
-                ws = null;
-            }
-        }
-
-        function connectWebSocket() {
-            intentionalStop = false;
-            closeWebSocket();
-
-            console.log('Connecting to WebSocket...');
-            ws = new WebSocket('ws://localhost:9999');
-            
-            // Set binary type to arraybuffer
-            ws.binaryType = 'arraybuffer';
-            
-            ws.onopen = () => {
-                console.log('WebSocket connected');
-                status.textContent = 'Status: Connected';
-                status.className = 'status';
-                reconnectAttempts = 0;
-            };
-
-            ws.onmessage = async (msg) => {
-                try {
-                    // Convert ArrayBuffer to Uint8Array
-                    const chunk = new Uint8Array(msg.data);
-                    
-                    // Look for JPEG start marker (FFD8) and end marker (FFD9)
-                    let startIndex = -1;
-                    let endIndex = -1;
-                    
-                    for (let i = 0; i < chunk.length - 1; i++) {
-                        if (chunk[i] === 0xFF && chunk[i + 1] === 0xD8) {
-                            startIndex = i;
-                        } else if (chunk[i] === 0xFF && chunk[i + 1] === 0xD9) {
-                            endIndex = i + 2;
-                            break;
-                        }
-                    }
-                    
-                    // Process the frame data based on what we found
-                    if (startIndex !== -1 && endIndex !== -1) {
-                        // Complete frame in single chunk
-                        const frameData = chunk.slice(startIndex, endIndex);
-                        await processCompleteFrame(frameData);
-                        frameBuffer = [];
-                        frameSize = 0;
-                        
-                        if (endIndex < chunk.length) {
-                            frameBuffer.push(chunk.slice(endIndex));
-                            frameSize = chunk.length - endIndex;
-                        }
-                    } else if (startIndex !== -1) {
-                        // Start of frame
-                        frameBuffer = [chunk.slice(startIndex)];
-                        frameSize = chunk.length - startIndex;
-                    } else if (endIndex !== -1 && frameBuffer.length > 0) {
-                        // End of frame
-                        frameBuffer.push(chunk.slice(0, endIndex));
-                        frameSize += endIndex;
-                        
-                        const combinedFrame = new Uint8Array(frameSize);
-                        let offset = 0;
-                        for (const buf of frameBuffer) {
-                            combinedFrame.set(buf, offset);
-                            offset += buf.length;
-                        }
-                        
-                        await processCompleteFrame(combinedFrame);
-                        frameBuffer = [];
-                        frameSize = 0;
-                        
-                        if (endIndex < chunk.length) {
-                            frameBuffer.push(chunk.slice(endIndex));
-                            frameSize = chunk.length - endIndex;
-                        }
-                    } else if (frameBuffer.length > 0) {
-                        // Middle of frame
-                        frameBuffer.push(chunk);
-                        frameSize += chunk.length;
-                        
-                        // Safety check to prevent memory issues
-                        if (frameSize > 10 * 1024 * 1024) { // 10MB limit
-                            console.warn('Frame size too large, resetting buffer');
-                            frameBuffer = [];
-                            frameSize = 0;
-                        }
-                    }
-                } catch (error) {
-                    console.error('Error processing stream data:', error);
-                    status.textContent = 'Status: Error processing stream data';
-                    status.className = 'status error';
-                    frameBuffer = [];
-                    frameSize = 0;
-                }
-            };
-
-            async function processCompleteFrame(frameData) {
-                if (frameData.length < 4 || 
-                    frameData[0] !== 0xFF || frameData[1] !== 0xD8 ||
-                    frameData[frameData.length - 2] !== 0xFF || frameData[frameData.length - 1] !== 0xD9) {
-                    console.log('Invalid JPEG frame detected, skipping...');
-                    return;
-                }
-
-                try {
-                    // Use smaller chunks for better memory handling
-                    const chunkSize = 0x4000; // 16KB chunks
-                    let base64String = '';
-                    
-                    for (let i = 0; i < frameData.length; i += chunkSize) {
-                        const chunk = frameData.slice(i, Math.min(i + chunkSize, frameData.length));
-                        base64String += String.fromCharCode.apply(null, chunk);
-                    }
-                    
-                    const dataUrl = `data:image/jpeg;base64,${btoa(base64String)}`;
-                    
-                    return new Promise((resolve, reject) => {
-                        const image = new Image();
-                        
-                        image.onload = () => {
-                            try {
-                                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                                
-                                const aspectRatio = image.width / image.height;
-                                let drawWidth = canvas.width;
-                                let drawHeight = canvas.width / aspectRatio;
-                                
-                                if (drawHeight > canvas.height) {
-                                    drawHeight = canvas.height;
-                                    drawWidth = canvas.height * aspectRatio;
-                                }
-                                
-                                const x = (canvas.width - drawWidth) / 2;
-                                const y = (canvas.height - drawHeight) / 2;
-                                
-                                ctx.drawImage(image, x, y, drawWidth, drawHeight);
-                                status.textContent = 'Status: Streaming';
-                                status.className = 'status';
-                                resolve();
-                            } catch (drawError) {
-                                console.error('Error drawing image:', drawError);
-                                status.textContent = 'Status: Error drawing image';
-                                status.className = 'status error';
-                                reject(drawError);
-                            }
-                        };
-                        
-                        image.onerror = (err) => {
-                            console.error('Error loading image:', err);
-                            status.textContent = 'Status: Error loading image frame';
-                            status.className = 'status error';
-                            reject(err);
-                        };
-                        
-                        image.src = dataUrl;
-                    });
-                } catch (error) {
-                    console.error('Error processing frame:', error);
-                    status.textContent = 'Status: Error processing frame';
-                    status.className = 'status error';
-                    throw error;
-                }
-            }
-
-            ws.onerror = (error) => {
-                console.error('WebSocket Error:', error);
-                status.textContent = 'Status: Connection Error';
-                status.className = 'status error';
-            };
-
-            ws.onclose = () => {
-                console.log('WebSocket closed');
-                status.textContent = 'Status: Disconnected';
-                
-                // Attempt to reconnect only if not intentionally stopped
-                if (!intentionalStop && reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++;
-                    console.log(`Reconnecting... Attempt ${reconnectAttempts}`);
-                    setTimeout(connectWebSocket, 2000);
-                } else {
-                    if (!intentionalStop) {
-                        status.textContent = 'Status: Failed to connect';
-                        status.className = 'status error';
-                    }
-                }
-            };
-        }
-
         ipcRenderer.on('stream-started', () => {
-            console.log('Stream started from main process');
-            isStreaming = true;
-            toggleBtn.textContent = 'Stop Stream';
-            toggleBtn.classList.add('stop');
+            isCapturing = true;
+            status.textContent = 'Status: Capturing';
+            status.classList.remove('error');
         });
 
         ipcRenderer.on('stream-stopped', () => {
-            closeWebSocket();
+            isCapturing = false;
             status.textContent = 'Status: Stopped';
-            status.className = 'status';
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            isStreaming = false;
-            toggleBtn.textContent = 'Start Stream';
+            toggleBtn.textContent = 'Start';
             toggleBtn.classList.remove('stop');
-            uploadProgress.classList.add('hidden');
         });
 
         ipcRenderer.on('stream-error', (event, error) => {
-            console.error('Stream error from main process:', error);
             status.textContent = `Status: Error - ${error}`;
-            status.className = 'status error';
-            isStreaming = false;
-            toggleBtn.textContent = 'Start Stream';
+            status.classList.add('error');
+            isCapturing = false;
+            toggleBtn.textContent = 'Start Capture';
             toggleBtn.classList.remove('stop');
         });
 
-        // Handle page unload
-        window.addEventListener('beforeunload', () => {
-            closeWebSocket();
+        ipcRenderer.on('frame-captured', () => {
+            framesCaptured++;
+            frameCount.textContent = framesCaptured;
         });
 
-        // Handle window close
-        window.onbeforeunload = (e) => {
-            if (isStreaming) {
-                e.returnValue = false;
-                return false;
-            }
-        };
-
-        // Add upload progress handler
         ipcRenderer.on('show-upload-progress', () => {
             uploadProgress.classList.remove('hidden');
         });
+
+        async function openImagesFolder() {
+            const { shell } = require('electron');
+            const imagesDir = await ipcRenderer.invoke('get-images-dir');
+            shell.openPath(imagesDir);
+        }
     </script>
 </body>
 </html> 

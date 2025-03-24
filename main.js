@@ -1,6 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
-const Stream = require('node-rtsp-stream');
 const axios = require('axios');
 const { spawn } = require('child_process');
 const fs = require('fs').promises;
@@ -10,12 +9,12 @@ require('dotenv').config();
 require('@electron/remote/main').initialize();
 
 let mainWindow;
-let stream;
 let capturedFrames = [];
 let captureInterval;
 let uploadInterval;
 let ffmpegProcess;
 let appConfig = null;
+let isCapturing = false;
 
 // Platform-specific configurations
 const isWindows = process.platform === 'win32';
@@ -23,6 +22,36 @@ const isMac = process.platform === 'darwin';
 
 // Configuration paths
 const configPath = path.join(app.getPath('userData'), 'config.json');
+
+// FFmpeg path resolution
+function findFFmpegPath() {
+    // First check environment variable
+    if (process.env.FFMPEG_PATH) {
+        return process.env.FFMPEG_PATH;
+    }
+
+    // Common FFmpeg locations
+    const possiblePaths = [
+        'ffmpeg.exe', // In PATH
+        'C:\\ffmpeg\\bin\\ffmpeg.exe',
+        'C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe',
+        'C:\\Program Files (x86)\\ffmpeg\\bin\\ffmpeg.exe',
+        path.join(process.cwd(), 'ffmpeg.exe'), // In current directory
+        path.join(__dirname, 'ffmpeg.exe'), // Next to main.js
+    ];
+
+    for (const ffmpegPath of possiblePaths) {
+        try {
+            if (fsSync.existsSync(ffmpegPath)) {
+                return ffmpegPath;
+            }
+        } catch (error) {
+            console.error(`Error checking FFmpeg path ${ffmpegPath}:`, error);
+        }
+    }
+
+    return isWindows ? 'ffmpeg.exe' : 'ffmpeg'; // Default fallback
+}
 
 // Default configuration from environment variables
 const defaultConfig = {
@@ -91,9 +120,32 @@ async function saveConfig(config) {
 // Configuration
 const config = {
     frameCapturePath: path.join(app.getPath('userData'), 'captured_frames'),
-    ffmpegPath: isWindows ? 'C:\\ffmpeg\\bin\\ffmpeg.exe' : 'ffmpeg',
+    ffmpegPath: findFFmpegPath(),
     iconPath: path.join(__dirname, 'assets', 'icon.ico')
 };
+
+// Verify FFmpeg is available
+async function verifyFFmpeg() {
+    return new Promise((resolve, reject) => {
+        const ffmpeg = spawn(config.ffmpegPath, ['-version']);
+        
+        ffmpeg.on('error', (error) => {
+            if (error.code === 'ENOENT') {
+                reject(new Error(`FFmpeg not found at ${config.ffmpegPath}. Please install FFmpeg or set FFMPEG_PATH environment variable.`));
+            } else {
+                reject(error);
+            }
+        });
+
+        ffmpeg.on('close', (code) => {
+            if (code === 0) {
+                resolve(true);
+            } else {
+                reject(new Error(`FFmpeg test failed with code ${code}`));
+            }
+        });
+    });
+}
 
 // Create images directory if it doesn't exist
 if (!fsSync.existsSync(config.frameCapturePath)) {
@@ -102,15 +154,12 @@ if (!fsSync.existsSync(config.frameCapturePath)) {
 
 // Add this function to handle cleanup
 async function cleanupAndUploadRemaining() {
-    // Stop the stream if running
-    if (stream) {
-        stream.stop();
-        stream = null;
+    // Stop capturing if running
+    if (isCapturing) {
+        clearInterval(captureInterval);
+        clearInterval(uploadInterval);
+        isCapturing = false;
     }
-
-    // Clear intervals
-    if (captureInterval) clearInterval(captureInterval);
-    if (uploadInterval) clearInterval(uploadInterval);
 
     // Upload any remaining frames
     if (capturedFrames.length > 0) {
@@ -152,10 +201,28 @@ async function cleanupAndUploadRemaining() {
     }
 }
 
-function createWindow() {
+async function createWindow() {
+    try {
+        await verifyFFmpeg();
+    } catch (error) {
+        await dialog.showMessageBox({
+            type: 'error',
+            title: 'FFmpeg Error',
+            message: 'FFmpeg is not properly configured',
+            detail: error.message + '\n\nPlease install FFmpeg or set the correct path in the FFMPEG_PATH environment variable.'
+        });
+        app.quit();
+        return;
+    }
+
     mainWindow = new BrowserWindow({
-        width: 1200,
-        height: 800,
+        width: 500,
+        height: 340,
+        resizable: false,
+        minimizable: true,
+        maximizable: true,
+        autoHideMenuBar: true,
+        title: 'Veronica | DriveX',
         icon: config.iconPath,
         webPreferences: {
             nodeIntegration: true,
@@ -175,14 +242,14 @@ function createWindow() {
 
     // Prevent window from closing directly
     mainWindow.on('close', async (e) => {
-        if (stream || capturedFrames.length > 0) {
+        if (isCapturing || capturedFrames.length > 0) {
             e.preventDefault();
             const choice = await dialog.showMessageBox(mainWindow, {
                 type: 'warning',
                 buttons: ['Stop Stream and Upload Remaining Images', 'Cancel'],
                 defaultId: 0,
                 title: 'Confirm Exit',
-                message: stream 
+                message: isCapturing 
                     ? 'The stream is still running and there might be images to upload. Do you want to stop it and upload remaining images?'
                     : 'There are still images to upload. Do you want to upload them before exiting?'
             });
@@ -230,12 +297,12 @@ app.on('activate', () => {
 
 // Update the stop-stream handler to also handle remaining uploads
 ipcMain.on('stop-stream', async () => {
-    if (stream || capturedFrames.length > 0) {
+    if (isCapturing) {
         try {
             await cleanupAndUploadRemaining();
             mainWindow.webContents.send('stream-stopped');
         } catch (error) {
-            console.error('Error stopping stream:', error);
+            console.error('Error stopping capture:', error);
             mainWindow.webContents.send('stream-error', error.message);
         }
     }
@@ -243,7 +310,7 @@ ipcMain.on('stop-stream', async () => {
 
 // Update the before-quit handler
 app.on('before-quit', async (e) => {
-    if (stream || capturedFrames.length > 0) {
+    if (isCapturing || capturedFrames.length > 0) {
         e.preventDefault();
         if (mainWindow) {
             mainWindow.focus();
@@ -304,53 +371,17 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
         return;
     }
 
-    if (stream) {
-        stream.stop();
+    if (isCapturing) {
+        clearInterval(captureInterval);
+        clearInterval(uploadInterval);
     }
 
-    if (captureInterval) clearInterval(captureInterval);
-    if (uploadInterval) clearInterval(uploadInterval);
+    isCapturing = true;
 
     try {
-        stream = new Stream({
-            name: 'camera',
-            streamUrl: rtspUrl,
-            wsPort: 9999,
-            host: 'localhost',
-            ffmpegOptions: {
-                '-rtsp_transport': 'tcp',
-                '-use_wallclock_as_timestamps': '1',
-                '-fflags': '+genpts+igndts',
-                '-c:v': 'mjpeg',
-                '-pix_fmt': 'yuvj420p',
-                '-f': 'mpjpeg',
-                '-q:v': '2',
-                '-r': '25',
-                '-s': '1280x720',
-                '-an': '',
-                '-vf': 'format=yuv420p'
-            }
-        });
-
-        console.log('Starting stream with options:', stream.options);
-
-        stream.on('start', () => {
-            console.log('Stream started');
-            mainWindow.webContents.send('stream-started');
-        });
-
-        stream.on('data', (data) => {
-            console.log('Stream data received, length:', data.length);
-        });
-
-        stream.on('error', (error) => {
-            console.error('Stream error:', error);
-            mainWindow.webContents.send('stream-error', error.message);
-        });
-
         // Start frame capture interval
         captureInterval = setInterval(async () => {
-            if (stream) {
+            if (isCapturing) {
                 try {
                     const frame = await captureFrame(rtspUrl);
                     capturedFrames.push({
@@ -359,6 +390,7 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
                         path: frame.path
                     });
                     console.log('Frame captured successfully and saved to:', frame.path);
+                    event.sender.send('frame-captured');
                 } catch (error) {
                     console.error('Error capturing frame:', error);
                     event.sender.send('stream-error', `Frame capture error: ${error.message}`);
@@ -373,8 +405,9 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
             }
         }, appConfig.frameUploadInterval);
 
+        event.sender.send('stream-started');
     } catch (error) {
-        console.error('Error starting stream:', error);
+        console.error('Error starting capture:', error);
         event.sender.send('stream-error', error.message);
     }
 });
