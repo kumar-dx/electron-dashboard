@@ -64,7 +64,10 @@ function captureFrame(rtspUrl) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const outputPath = path.join(config.frameCapturePath, `frame_${timestamp}.jpg`);
     
-    const ffmpeg = spawn('ffmpeg', [
+    // Use platform-specific ffmpeg command
+    const ffmpegCommand = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    
+    const ffmpeg = spawn(ffmpegCommand, [
       '-y',
       '-rtsp_transport', 'tcp',
       '-i', rtspUrl,
@@ -105,11 +108,14 @@ ipcMain.on('start-stream', (event, rtspUrl) => {
   if (uploadInterval) clearInterval(uploadInterval);
 
   try {
+    // Use platform-specific host
+    const host = process.platform === 'win32' ? 'localhost' : '127.0.0.1';
+    
     stream = new Stream({
       name: 'camera',
       streamUrl: rtspUrl,
       wsPort: 9999,
-      host: '127.0.0.1', // Explicitly use IPv4 localhost
+      host: host,
       ffmpegOptions: {
         '-rtsp_transport': 'tcp',
         '-use_wallclock_as_timestamps': '1',

@@ -239,7 +239,8 @@
             closeWebSocket();
 
             console.log('Connecting to WebSocket...');
-            ws = new WebSocket('ws://127.0.0.1:9999');
+            // Use localhost for Electron environment
+            ws = new WebSocket('ws://localhost:9999');
             
             // Set binary type to arraybuffer
             ws.binaryType = 'arraybuffer';
