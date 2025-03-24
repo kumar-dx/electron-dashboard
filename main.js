@@ -15,6 +15,10 @@ let captureInterval;
 let uploadInterval;
 let ffmpegProcess;
 
+// Platform-specific configurations
+const isWindows = process.platform === 'win32';
+const isMac = process.platform === 'darwin';
+
 // Configuration
 const config = {
     apiEndpoint: process.env.API_ENDPOINT || 'http://localhost:8000/api/v1/analytics/process-local-images/',
@@ -22,7 +26,8 @@ const config = {
     storeId: parseInt(process.env.STORE_ID || '111', 10),
     frameCapturePath: path.join(app.getPath('userData'), 'captured_frames'),
     frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10),
-    frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10)
+    frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10),
+    ffmpegPath: isWindows ? 'ffmpeg.exe' : 'ffmpeg'
 };
 
 // Create images directory if it doesn't exist
@@ -31,150 +36,164 @@ if (!fsSync.existsSync(config.frameCapturePath)) {
 }
 
 function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      webSecurity: false // Required for WebSocket connection
-    }
-  });
+    mainWindow = new BrowserWindow({
+        width: 1200,
+        height: 800,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false,
+            webSecurity: false
+        }
+    });
 
-  mainWindow.loadFile('index.html');
-  mainWindow.webContents.openDevTools(); // This will help us debug any issues
+    mainWindow.loadFile('index.html');
+    
+    // Only open DevTools in development
+    if (process.env.NODE_ENV === 'development') {
+        mainWindow.webContents.openDevTools();
+    }
+}
+
+// Handle creating/removing shortcuts on Windows when installing/uninstalling
+if (isWindows) {
+    app.setAppUserModelId(process.execPath);
 }
 
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+    if (!isMac) {
+        app.quit();
+    }
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
+    if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+    }
 });
 
 function captureFrame(rtspUrl) {
-  return new Promise((resolve, reject) => {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const outputPath = path.join(config.frameCapturePath, `frame_${timestamp}.jpg`);
-    
-    // Use platform-specific ffmpeg command
-    const ffmpegCommand = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
-    
-    const ffmpeg = spawn(ffmpegCommand, [
-      '-y',
-      '-rtsp_transport', 'tcp',
-      '-i', rtspUrl,
-      '-vframes', '1',
-      '-q:v', '1',
-      '-vf', 'scale=1280:720,format=yuv420p',
-      '-update', '1',
-      '-f', 'image2',
-      outputPath
-    ]);
+    return new Promise((resolve, reject) => {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const outputPath = path.join(config.frameCapturePath, `frame_${timestamp}.jpg`);
+        
+        const ffmpegArgs = [
+            '-y',
+            '-rtsp_transport', 'tcp',
+            '-i', rtspUrl,
+            '-vframes', '1',
+            '-q:v', '1',
+            '-vf', 'scale=1280:720,format=yuv420p',
+            '-update', '1',
+            '-f', 'image2',
+            outputPath
+        ];
 
-    ffmpeg.on('close', async (code) => {
-      if (code === 0) {
-        try {
-          const data = await fs.readFile(outputPath);
-          resolve({ data, path: outputPath });
-        } catch (err) {
-          reject(err);
-        }
-      } else {
-        reject(new Error(`FFmpeg process exited with code ${code}`));
-      }
-    });
+        const ffmpeg = spawn(config.ffmpegPath, ffmpegArgs, {
+            windowsHide: true // Prevent command window from showing on Windows
+        });
 
-    ffmpeg.stderr.on('data', (data) => {
-      console.log(`FFmpeg stderr: ${data}`);
+        let ffmpegError = '';
+
+        ffmpeg.on('close', async (code) => {
+            if (code === 0) {
+                try {
+                    const data = await fs.readFile(outputPath);
+                    resolve({ data, path: outputPath });
+                } catch (err) {
+                    reject(new Error(`Failed to read captured frame: ${err.message}`));
+                }
+            } else {
+                reject(new Error(`FFmpeg process failed with code ${code}: ${ffmpegError}`));
+            }
+        });
+
+        ffmpeg.stderr.on('data', (data) => {
+            ffmpegError += data.toString();
+            console.log(`FFmpeg stderr: ${data}`);
+        });
+
+        ffmpeg.on('error', (error) => {
+            reject(new Error(`Failed to start FFmpeg: ${error.message}`));
+        });
     });
-  });
 }
 
 ipcMain.on('start-stream', (event, rtspUrl) => {
-  if (stream) {
-    stream.stop();
-  }
+    if (stream) {
+        stream.stop();
+    }
 
-  // Clear existing intervals if any
-  if (captureInterval) clearInterval(captureInterval);
-  if (uploadInterval) clearInterval(uploadInterval);
+    if (captureInterval) clearInterval(captureInterval);
+    if (uploadInterval) clearInterval(uploadInterval);
 
-  try {
-    // Use platform-specific host
-    const host = process.platform === 'win32' ? 'localhost' : '127.0.0.1';
-    
-    stream = new Stream({
-      name: 'camera',
-      streamUrl: rtspUrl,
-      wsPort: 9999,
-      host: host,
-      ffmpegOptions: {
-        '-rtsp_transport': 'tcp',
-        '-use_wallclock_as_timestamps': '1',
-        '-fflags': '+genpts+igndts',
-        '-c:v': 'mjpeg',
-        '-pix_fmt': 'yuvj420p',
-        '-f': 'mpjpeg',
-        '-q:v': '2',
-        '-r': '25',
-        '-s': '1280x720',
-        '-an': '',
-        '-vf': 'format=yuv420p'
-      }
-    });
+    try {
+        stream = new Stream({
+            name: 'camera',
+            streamUrl: rtspUrl,
+            wsPort: 9999,
+            host: 'localhost', // Use localhost for both platforms
+            ffmpegOptions: {
+                '-rtsp_transport': 'tcp',
+                '-use_wallclock_as_timestamps': '1',
+                '-fflags': '+genpts+igndts',
+                '-c:v': 'mjpeg',
+                '-pix_fmt': 'yuvj420p',
+                '-f': 'mpjpeg',
+                '-q:v': '2',
+                '-r': '25',
+                '-s': '1280x720',
+                '-an': '',
+                '-vf': 'format=yuv420p'
+            }
+        });
 
-    console.log('Starting stream with options:', stream.options);
+        console.log('Starting stream with options:', stream.options);
 
-    stream.on('start', () => {
-      console.log('Stream started');
-      mainWindow.webContents.send('stream-started');
-    });
+        stream.on('start', () => {
+            console.log('Stream started');
+            mainWindow.webContents.send('stream-started');
+        });
 
-    stream.on('data', (data) => {
-      console.log('Stream data received, length:', data.length);
-    });
+        stream.on('data', (data) => {
+            console.log('Stream data received, length:', data.length);
+        });
 
-    stream.on('error', (error) => {
-      console.error('Stream error:', error);
-      mainWindow.webContents.send('stream-error', error.message);
-    });
+        stream.on('error', (error) => {
+            console.error('Stream error:', error);
+            mainWindow.webContents.send('stream-error', error.message);
+        });
 
-    // Start frame capture interval
-    captureInterval = setInterval(async () => {
-      if (stream) {
-        try {
-          const frame = await captureFrame(rtspUrl);
-          capturedFrames.push({
-            timestamp: new Date().toISOString(),
-            data: frame.data,
-            path: frame.path
-          });
-          console.log('Frame captured successfully and saved to:', frame.path);
-        } catch (error) {
-          console.error('Error capturing frame:', error);
-          event.sender.send('stream-error', `Frame capture error: ${error.message}`);
-        }
-      }
-    }, config.frameCaptureInterval);
+        // Start frame capture interval
+        captureInterval = setInterval(async () => {
+            if (stream) {
+                try {
+                    const frame = await captureFrame(rtspUrl);
+                    capturedFrames.push({
+                        timestamp: new Date().toISOString(),
+                        data: frame.data,
+                        path: frame.path
+                    });
+                    console.log('Frame captured successfully and saved to:', frame.path);
+                } catch (error) {
+                    console.error('Error capturing frame:', error);
+                    event.sender.send('stream-error', `Frame capture error: ${error.message}`);
+                }
+            }
+        }, config.frameCaptureInterval);
 
-    // Start upload interval
-    uploadInterval = setInterval(async () => {
-      if (capturedFrames.length > 0) {
-        await uploadFrames();
-      }
-    }, config.frameUploadInterval);
-  } catch (error) {
-    console.error('Error starting stream:', error);
-    event.sender.send('stream-error', error.message);
-  }
+        // Start upload interval
+        uploadInterval = setInterval(async () => {
+            if (capturedFrames.length > 0) {
+                await uploadFrames();
+            }
+        }, config.frameUploadInterval);
+
+    } catch (error) {
+        console.error('Error starting stream:', error);
+        event.sender.send('stream-error', error.message);
+    }
 });
 
 ipcMain.on('stop-stream', async () => {

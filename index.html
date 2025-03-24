@@ -239,7 +239,6 @@
             closeWebSocket();
 
             console.log('Connecting to WebSocket...');
-            // Use localhost for Electron environment
             ws = new WebSocket('ws://localhost:9999');
             
             // Set binary type to arraybuffer
@@ -257,87 +256,143 @@
                     // Convert ArrayBuffer to Uint8Array
                     const chunk = new Uint8Array(msg.data);
                     
-                    // Debug the actual bytes we're receiving
-                    const byteString = Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                    console.log('Received bytes:', byteString);
+                    // Look for JPEG start marker (FFD8) and end marker (FFD9)
+                    let startIndex = -1;
+                    let endIndex = -1;
                     
-                    // If chunk is small, accumulate in buffer until we have enough data
-                    if (chunk.length < 100) { // Small chunk threshold
-                        frameBuffer.push(chunk);
-                        frameSize += chunk.length;
-                        
-                        // Try to process accumulated data
-                        if (frameSize > 0) {
-                            const combinedChunk = new Uint8Array(frameSize);
-                            let offset = 0;
-                            for (const buf of frameBuffer) {
-                                combinedChunk.set(buf, offset);
-                                offset += buf.length;
-                            }
-                            
-                            // Look for JPEG markers in combined data
-                            const markerInfo = findJPEGMarkers(combinedChunk);
-                            if (markerInfo) {
-                                console.log('Found marker in combined data:', 
-                                    markerInfo.isStart ? 'START' : 'END',
-                                    'at position', markerInfo.start);
-                            }
-                        }
-                    } else {
-                        // Large chunk - process as before
-                        const markerInfo = findJPEGMarkers(chunk);
-                        
-                        if (markerInfo) {
-                            if (markerInfo.isStart) {
-                                console.log('Found start of new JPEG frame at position:', markerInfo.start);
-                                frameBuffer = [chunk.slice(markerInfo.start)];
-                                frameSize = chunk.length - markerInfo.start;
-                                isFrameStart = true;
-                            } else if (isFrameStart) {
-                                console.log('Found end of JPEG frame at position:', markerInfo.start);
-                                frameBuffer.push(chunk.slice(0, markerInfo.start + 2));
-                                frameSize += markerInfo.start + 2;
-                                
-                                // Combine all chunks
-                                const combinedFrame = new Uint8Array(frameSize);
-                                let offset = 0;
-                                for (const chunk of frameBuffer) {
-                                    combinedFrame.set(chunk, offset);
-                                    offset += chunk.length;
-                                }
-                                
-                                // Process the complete frame
-                                processFrame(combinedFrame);
-                                
-                                // Reset for next frame
-                                frameBuffer = [];
-                                frameSize = 0;
-                                isFrameStart = false;
-                                
-                                // If there's more data after this frame, start a new frame
-                                if (markerInfo.start + 2 < chunk.length) {
-                                    const remainingData = chunk.slice(markerInfo.start + 2);
-                                    frameBuffer.push(remainingData);
-                                    frameSize = remainingData.length;
-                                }
-                            }
-                        } else if (isFrameStart) {
-                            // Middle of frame, add to buffer
-                            frameBuffer.push(chunk);
-                            frameSize += chunk.length;
+                    for (let i = 0; i < chunk.length - 1; i++) {
+                        if (chunk[i] === 0xFF && chunk[i + 1] === 0xD8) {
+                            startIndex = i;
+                        } else if (chunk[i] === 0xFF && chunk[i + 1] === 0xD9) {
+                            endIndex = i + 2;
+                            break;
                         }
                     }
                     
+                    // Process the frame data based on what we found
+                    if (startIndex !== -1 && endIndex !== -1) {
+                        // Complete frame in single chunk
+                        const frameData = chunk.slice(startIndex, endIndex);
+                        await processCompleteFrame(frameData);
+                        frameBuffer = [];
+                        frameSize = 0;
+                        
+                        if (endIndex < chunk.length) {
+                            frameBuffer.push(chunk.slice(endIndex));
+                            frameSize = chunk.length - endIndex;
+                        }
+                    } else if (startIndex !== -1) {
+                        // Start of frame
+                        frameBuffer = [chunk.slice(startIndex)];
+                        frameSize = chunk.length - startIndex;
+                    } else if (endIndex !== -1 && frameBuffer.length > 0) {
+                        // End of frame
+                        frameBuffer.push(chunk.slice(0, endIndex));
+                        frameSize += endIndex;
+                        
+                        const combinedFrame = new Uint8Array(frameSize);
+                        let offset = 0;
+                        for (const buf of frameBuffer) {
+                            combinedFrame.set(buf, offset);
+                            offset += buf.length;
+                        }
+                        
+                        await processCompleteFrame(combinedFrame);
+                        frameBuffer = [];
+                        frameSize = 0;
+                        
+                        if (endIndex < chunk.length) {
+                            frameBuffer.push(chunk.slice(endIndex));
+                            frameSize = chunk.length - endIndex;
+                        }
+                    } else if (frameBuffer.length > 0) {
+                        // Middle of frame
+                        frameBuffer.push(chunk);
+                        frameSize += chunk.length;
+                        
+                        // Safety check to prevent memory issues
+                        if (frameSize > 10 * 1024 * 1024) { // 10MB limit
+                            console.warn('Frame size too large, resetting buffer');
+                            frameBuffer = [];
+                            frameSize = 0;
+                        }
+                    }
                 } catch (error) {
                     console.error('Error processing stream data:', error);
                     status.textContent = 'Status: Error processing stream data';
                     status.className = 'status error';
-                    // Reset buffer on error
                     frameBuffer = [];
                     frameSize = 0;
-                    isFrameStart = false;
                 }
             };
+
+            async function processCompleteFrame(frameData) {
+                if (frameData.length < 4 || 
+                    frameData[0] !== 0xFF || frameData[1] !== 0xD8 ||
+                    frameData[frameData.length - 2] !== 0xFF || frameData[frameData.length - 1] !== 0xD9) {
+                    console.log('Invalid JPEG frame detected, skipping...');
+                    return;
+                }
+
+                try {
+                    // Use smaller chunks for better memory handling
+                    const chunkSize = 0x4000; // 16KB chunks
+                    let base64String = '';
+                    
+                    for (let i = 0; i < frameData.length; i += chunkSize) {
+                        const chunk = frameData.slice(i, Math.min(i + chunkSize, frameData.length));
+                        base64String += String.fromCharCode.apply(null, chunk);
+                    }
+                    
+                    const dataUrl = `data:image/jpeg;base64,${btoa(base64String)}`;
+                    
+                    return new Promise((resolve, reject) => {
+                        const image = new Image();
+                        
+                        image.onload = () => {
+                            try {
+                                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                                
+                                const aspectRatio = image.width / image.height;
+                                let drawWidth = canvas.width;
+                                let drawHeight = canvas.width / aspectRatio;
+                                
+                                if (drawHeight > canvas.height) {
+                                    drawHeight = canvas.height;
+                                    drawWidth = canvas.height * aspectRatio;
+                                }
+                                
+                                const x = (canvas.width - drawWidth) / 2;
+                                const y = (canvas.height - drawHeight) / 2;
+                                
+                                ctx.drawImage(image, x, y, drawWidth, drawHeight);
+                                status.textContent = 'Status: Streaming';
+                                status.className = 'status';
+                                resolve();
+                            } catch (drawError) {
+                                console.error('Error drawing image:', drawError);
+                                status.textContent = 'Status: Error drawing image';
+                                status.className = 'status error';
+                                reject(drawError);
+                            }
+                        };
+                        
+                        image.onerror = (err) => {
+                            console.error('Error loading image:', err);
+                            status.textContent = 'Status: Error loading image frame';
+                            status.className = 'status error';
+                            reject(err);
+                        };
+                        
+                        image.src = dataUrl;
+                    });
+                } catch (error) {
+                    console.error('Error processing frame:', error);
+                    status.textContent = 'Status: Error processing frame';
+                    status.className = 'status error';
+                    throw error;
+                }
+            }
 
             ws.onerror = (error) => {
                 console.error('WebSocket Error:', error);
