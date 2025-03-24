@@ -18,5 +18,12 @@
     "electron-builder": "^24.9.1",
     "form-data": "^4.0.2",
     "node-rtsp-stream": "^0.0.9"
+  },
+  "build": {
+    "appId": "com.drivex.dashboard",
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": "nsis"
+    }
   }
 }

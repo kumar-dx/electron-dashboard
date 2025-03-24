@@ -91,7 +91,8 @@ async function saveConfig(config) {
 // Configuration
 const config = {
     frameCapturePath: path.join(app.getPath('userData'), 'captured_frames'),
-    ffmpegPath: isWindows ? 'ffmpeg.exe' : 'ffmpeg'
+    ffmpegPath: isWindows ? 'C:\\ffmpeg\\bin\\ffmpeg.exe' : 'ffmpeg',
+    iconPath: path.join(__dirname, 'assets', 'icon.ico')
 };
 
 // Create images directory if it doesn't exist
@@ -155,6 +156,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
+        icon: config.iconPath,
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
