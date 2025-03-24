@@ -113,17 +113,35 @@
         // Add buffer for accumulating chunks
         let frameBuffer = [];
         let frameSize = 0;
+        let isFrameStart = false;
 
-        // Function to check if we have a complete JPEG
-        function isCompleteJPEG(data) {
-            // Check for JPEG end marker (FFD9)
-            if (data.length < 2) return false;
-            return data[data.length - 2] === 0xFF && data[data.length - 1] === 0xD9;
+        // Function to check for JPEG markers
+        function findJPEGMarkers(data) {
+            // Look for JPEG start marker (FFD8)
+            for (let i = 0; i < data.length - 1; i++) {
+                if (data[i] === 0xFF && data[i + 1] === 0xD8) {
+                    return { start: i, isStart: true };
+                }
+                if (data[i] === 0xFF && data[i + 1] === 0xD9) {
+                    return { start: i, isStart: false };
+                }
+            }
+            return null;
         }
 
         // Function to process a complete frame
         function processFrame(frameData) {
             try {
+                // Verify this is a valid JPEG (starts with FFD8 and ends with FFD9)
+                if (frameData.length < 4 || 
+                    frameData[0] !== 0xFF || frameData[1] !== 0xD8 ||
+                    frameData[frameData.length - 2] !== 0xFF || frameData[frameData.length - 1] !== 0xD9) {
+                    console.log('Invalid JPEG frame detected, skipping...');
+                    return;
+                }
+
+                console.log('Processing frame of size:', frameData.length);
+                
                 // Convert to base64
                 const base64String = btoa(String.fromCharCode.apply(null, frameData));
                 const dataUrl = `data:image/jpeg;base64,${base64String}`;
@@ -140,6 +158,8 @@
                         
                         // Draw new frame
                         ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+                        status.textContent = 'Status: Streaming';
+                        status.className = 'status';
                     } catch (drawError) {
                         console.error('Error drawing image:', drawError);
                         status.textContent = 'Status: Error drawing image';
@@ -151,8 +171,9 @@
                 image.onerror = (err) => {
                     console.error('Error loading image:', {
                         error: err,
-                        dataLength: base64String.length,
-                        sampleData: base64String.substring(0, 100) + '...'
+                        frameSize: frameData.length,
+                        startBytes: Array.from(frameData.slice(0, 4)).map(b => b.toString(16)).join(' '),
+                        endBytes: Array.from(frameData.slice(-4)).map(b => b.toString(16)).join(' ')
                     });
                     status.textContent = 'Status: Error loading image frame';
                     status.className = 'status error';
@@ -232,32 +253,80 @@
 
             ws.onmessage = async (msg) => {
                 try {
-                    // Log the received data size
-                    console.log('Received WebSocket message size:', msg.data.byteLength);
-                    
                     // Convert ArrayBuffer to Uint8Array
                     const chunk = new Uint8Array(msg.data);
-                    console.log('Chunk size:', chunk.length);
                     
-                    // Add chunk to frame buffer
-                    frameBuffer.push(chunk);
-                    frameSize += chunk.length;
+                    // Debug the actual bytes we're receiving
+                    const byteString = Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                    console.log('Received bytes:', byteString);
                     
-                    // Check if we have a complete frame
-                    const combinedFrame = new Uint8Array(frameSize);
-                    let offset = 0;
-                    for (const chunk of frameBuffer) {
-                        combinedFrame.set(chunk, offset);
-                        offset += chunk.length;
+                    // If chunk is small, accumulate in buffer until we have enough data
+                    if (chunk.length < 100) { // Small chunk threshold
+                        frameBuffer.push(chunk);
+                        frameSize += chunk.length;
+                        
+                        // Try to process accumulated data
+                        if (frameSize > 0) {
+                            const combinedChunk = new Uint8Array(frameSize);
+                            let offset = 0;
+                            for (const buf of frameBuffer) {
+                                combinedChunk.set(buf, offset);
+                                offset += buf.length;
+                            }
+                            
+                            // Look for JPEG markers in combined data
+                            const markerInfo = findJPEGMarkers(combinedChunk);
+                            if (markerInfo) {
+                                console.log('Found marker in combined data:', 
+                                    markerInfo.isStart ? 'START' : 'END',
+                                    'at position', markerInfo.start);
+                            }
+                        }
+                    } else {
+                        // Large chunk - process as before
+                        const markerInfo = findJPEGMarkers(chunk);
+                        
+                        if (markerInfo) {
+                            if (markerInfo.isStart) {
+                                console.log('Found start of new JPEG frame at position:', markerInfo.start);
+                                frameBuffer = [chunk.slice(markerInfo.start)];
+                                frameSize = chunk.length - markerInfo.start;
+                                isFrameStart = true;
+                            } else if (isFrameStart) {
+                                console.log('Found end of JPEG frame at position:', markerInfo.start);
+                                frameBuffer.push(chunk.slice(0, markerInfo.start + 2));
+                                frameSize += markerInfo.start + 2;
+                                
+                                // Combine all chunks
+                                const combinedFrame = new Uint8Array(frameSize);
+                                let offset = 0;
+                                for (const chunk of frameBuffer) {
+                                    combinedFrame.set(chunk, offset);
+                                    offset += chunk.length;
+                                }
+                                
+                                // Process the complete frame
+                                processFrame(combinedFrame);
+                                
+                                // Reset for next frame
+                                frameBuffer = [];
+                                frameSize = 0;
+                                isFrameStart = false;
+                                
+                                // If there's more data after this frame, start a new frame
+                                if (markerInfo.start + 2 < chunk.length) {
+                                    const remainingData = chunk.slice(markerInfo.start + 2);
+                                    frameBuffer.push(remainingData);
+                                    frameSize = remainingData.length;
+                                }
+                            }
+                        } else if (isFrameStart) {
+                            // Middle of frame, add to buffer
+                            frameBuffer.push(chunk);
+                            frameSize += chunk.length;
+                        }
                     }
                     
-                    if (isCompleteJPEG(combinedFrame)) {
-                        console.log('Complete frame received, size:', frameSize);
-                        processFrame(combinedFrame);
-                        // Reset buffer
-                        frameBuffer = [];
-                        frameSize = 0;
-                    }
                 } catch (error) {
                     console.error('Error processing stream data:', error);
                     status.textContent = 'Status: Error processing stream data';
@@ -265,6 +334,7 @@
                     // Reset buffer on error
                     frameBuffer = [];
                     frameSize = 0;
+                    isFrameStart = false;
                 }
             };
 
