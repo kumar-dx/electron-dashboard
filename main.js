@@ -54,12 +54,14 @@ function findFFmpegPath() {
     return isWindows ? 'ffmpeg.exe' : 'ffmpeg'; // Default fallback
 }
 
-// Default configuration from environment variables
+// Default configuration
 const defaultConfig = {
-    baseUrl: process.env.BASE_URL || 'http://localhost:3000', // Default fallback
-    frameCaptureInterval: parseInt(process.env.FRAME_CAPTURE_INTERVAL || '30000', 10), // 30 seconds
-    frameUploadInterval: parseInt(process.env.FRAME_UPLOAD_INTERVAL || '300000', 10),
-    apiKey: process.env.API_KEY || 'default-key' // Default fallback
+    storeId: '',
+    rtspUrl: '',
+    baseUrl: '',
+    apiKey: '',
+    frameCaptureInterval: 30000,
+    frameUploadInterval: 60000
 };
 
 async function loadConfig() {
@@ -70,11 +72,10 @@ async function loadConfig() {
             savedConfig = JSON.parse(configData);
         }
 
-        // Only use store ID and RTSP URL from saved config
+        // Use saved config values if available, otherwise use defaults
         appConfig = {
             ...defaultConfig,
-            storeId: savedConfig.storeId,
-            rtspUrl: savedConfig.rtspUrl
+            ...savedConfig
         };
 
         return appConfig;
@@ -87,17 +88,18 @@ async function loadConfig() {
 
 async function saveConfig(config) {
     try {
-        // Only save store ID and RTSP URL
+        // Save all config values
         const configToSave = {
             storeId: config.storeId,
-            rtspUrl: config.rtspUrl
+            rtspUrl: config.rtspUrl,
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
+            frameCaptureInterval: parseInt(config.frameCaptureInterval),
+            frameUploadInterval: parseInt(config.frameUploadInterval)
         };
 
-        // Keep environment variables in memory but don't save them
-        appConfig = {
-            ...defaultConfig,
-            ...configToSave
-        };
+        // Update in-memory config
+        appConfig = configToSave;
 
         await fs.writeFile(configPath, JSON.stringify(configToSave, null, 2));
         return true;
@@ -485,7 +487,7 @@ async function uploadFrames() {
 
   try {
     const headers = {
-      'X-API-KEY': appConfig.apiKey
+      'X-API-KEY': `${appConfig.apiKey}`
     };
 
     const framesToUpload = [...capturedFrames];
@@ -517,9 +519,7 @@ async function uploadFrames() {
             ...headers,
             ...formData.getHeaders()
           },
-          timeout: 30000,
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity
+          timeout: 30000
         });
 
         console.log(`Successfully uploaded frame from: ${frame.path}`);
@@ -534,24 +534,23 @@ async function uploadFrames() {
           console.error(`Error deleting file ${frame.path}:`, deleteError.message);
         }
       } catch (error) {
-        let shouldRetry = false;
         let errorMessage = '';
+        let shouldRetry = false;
 
         if (error.response) {
           errorMessage = `Server Error (${error.response.status}): ${JSON.stringify(error.response.data)}`;
           shouldRetry = error.response.status >= 500;
         } else if (error.request) {
-          errorMessage = `No response received: ${error.code || 'Unknown error'}`;
+          errorMessage = `Connection Error: ${error.code || 'Unknown error'}`;
           shouldRetry = ['ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT'].includes(error.code);
         } else {
-          errorMessage = `Request setup error: ${error.message}`;
+          errorMessage = `Request Error: ${error.message}`;
           shouldRetry = false;
         }
 
         console.error(`Error uploading frame from ${frame.path}: ${errorMessage}`);
         
         if (shouldRetry) {
-          // Check if file still exists before adding back to queue
           try {
             await fs.access(frame.path);
             console.log(`Adding frame back to queue for retry: ${frame.path}`);
